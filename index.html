@@ -1,0 +1,1479 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ポケモン バトルロワイヤル</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-family: 'Courier New', monospace;
+  user-select: none;
+}
+canvas { cursor: pointer; max-width: 100vw; max-height: 95vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// =====================================================
+// キャンバス
+// =====================================================
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+
+// =====================================================
+// レイアウト（縦横自動切替）
+// =====================================================
+let W, H, isPortrait;
+let PW, CW, ARENA_W, AX, ACX, ACY, ARX, ARY, RP_X, CP_X;
+let COMM_Y, COMM_H;
+let DPAD_CX, DPAD_CY, DPAD_SZ, DPAD_STEP, DPAD_RECTS;
+
+function setLayout() {
+  isPortrait = window.innerHeight > window.innerWidth * 1.05;
+  if (isPortrait) {
+    W = 390; H = 700;
+    PW = 76; CW = 0;
+    ARENA_W = W - PW * 2;          // 238
+    AX = PW;                        // 76
+    ACX = AX + ARENA_W / 2;        // 195
+    COMM_Y = 285;
+    ACY = COMM_Y / 2;              // 142
+    ARX = ARENA_W / 2 - 10;       // 109
+    ARY = COMM_Y / 2 - 10;        // 132
+    RP_X = PW + ARENA_W;           // 314
+    CP_X = 0;
+    COMM_H = 120;
+    DPAD_CX = W / 2;
+    DPAD_CY = COMM_Y + COMM_H + 155; // 560
+    DPAD_SZ = 54;
+    DPAD_STEP = 64;
+  } else {
+    W = 1060; H = 590;
+    PW = 158; CW = 200;
+    ARENA_W = W - PW * 2 - CW;    // 544
+    AX = PW;                        // 158
+    ACX = AX + ARENA_W / 2;        // 430
+    ACY = H / 2;                    // 295
+    ARX = ARENA_W / 2 - 20;       // 252
+    ARY = H / 2 - 20;             // 275
+    RP_X = PW + ARENA_W;           // 702
+    CP_X = RP_X + PW;              // 860
+    COMM_Y = 0; COMM_H = H;
+    DPAD_CX = AX + 72;             // 230
+    DPAD_CY = H - 72;              // 518
+    DPAD_SZ = 38;
+    DPAD_STEP = 42;
+  }
+  c.width = W; c.height = H;
+  DPAD_RECTS = {
+    up:    {x: DPAD_CX - DPAD_SZ/2, y: DPAD_CY - DPAD_STEP - DPAD_SZ/2, w: DPAD_SZ, h: DPAD_SZ},
+    down:  {x: DPAD_CX - DPAD_SZ/2, y: DPAD_CY + DPAD_STEP - DPAD_SZ/2, w: DPAD_SZ, h: DPAD_SZ},
+    left:  {x: DPAD_CX - DPAD_STEP - DPAD_SZ/2, y: DPAD_CY - DPAD_SZ/2, w: DPAD_SZ, h: DPAD_SZ},
+    right: {x: DPAD_CX + DPAD_STEP - DPAD_SZ/2, y: DPAD_CY - DPAD_SZ/2, w: DPAD_SZ, h: DPAD_SZ},
+  };
+}
+
+function resize() {
+  const prevPort = isPortrait;
+  setLayout();
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H, 1.4);
+  c.style.width = (W * s) + 'px'; c.style.height = (H * s) + 'px';
+  if (prevPort !== undefined && prevPort !== isPortrait && fighters.length > 0) {
+    if (phase !== 'battle') {
+      initFighters();
+    } else {
+      fighters.forEach(f => { f.x = ACX + (Math.random() - 0.5) * ARX; f.y = ACY + (Math.random() - 0.5) * ARY; keepInArena(f); });
+    }
+  }
+}
+setLayout();
+resize();
+window.addEventListener('resize', resize);
+
+// =====================================================
+// タイプカラー
+// =====================================================
+const TC = {
+  Grass:'#4CAF50', Poison:'#9C27B0', Fire:'#FF5722',
+  Flying:'#9575CD', Water:'#2196F3', Ice:'#80DEEA',
+  Steel:'#90A4AE', Psychic:'#E91E63', Ghost:'#5C6BC0',
+  Dragon:'#00BCD4', Electric:'#FFC107', Normal:'#9E9E9E',
+  Fighting:'#FF5252', Ground:'#FF8F00', Rock:'#795548', Bug:'#8BC34A',
+};
+
+// =====================================================
+// タイプ相性
+// =====================================================
+const TYPE_EFF = {
+  Normal:   {Rock:0.5, Steel:0.5, Ghost:0},
+  Fire:     {Grass:2, Ice:2, Bug:2, Steel:2, Water:0.5, Fire:0.5, Rock:0.5, Dragon:0.5},
+  Water:    {Fire:2, Ground:2, Rock:2, Water:0.5, Grass:0.5, Dragon:0.5},
+  Grass:    {Water:2, Ground:2, Rock:2, Poison:0.5, Fire:0.5, Bug:0.5, Flying:0.5, Grass:0.5, Dragon:0.5, Steel:0.5},
+  Electric: {Water:2, Flying:2, Ground:0, Electric:0.5, Grass:0.5, Dragon:0.5},
+  Ice:      {Grass:2, Ground:2, Flying:2, Dragon:2, Fire:0.5, Water:0.5, Ice:0.5, Steel:0.5},
+  Fighting: {Normal:2, Ice:2, Rock:2, Dark:2, Poison:0.5, Flying:0.5, Psychic:0.5, Bug:0.5, Ghost:0},
+  Poison:   {Grass:2, Poison:0.5, Ground:0.5, Rock:0.5, Ghost:0.5, Steel:0},
+  Ground:   {Fire:2, Electric:2, Poison:2, Rock:2, Steel:2, Grass:0.5, Bug:0.5, Flying:0},
+  Flying:   {Grass:2, Fighting:2, Bug:2, Electric:0.5, Rock:0.5, Steel:0.5},
+  Psychic:  {Fighting:2, Poison:2, Psychic:0.5, Dark:0},
+  Bug:      {Grass:2, Psychic:2, Dark:2, Fire:0.5, Fighting:0.5, Flying:0.5, Ghost:0.5, Steel:0.5},
+  Rock:     {Fire:2, Ice:2, Flying:2, Bug:2, Fighting:0.5, Ground:0.5, Steel:0.5},
+  Ghost:    {Ghost:2, Psychic:2, Normal:0, Dark:0.5},
+  Dragon:   {Dragon:2, Steel:0.5},
+  Steel:    {Ice:2, Rock:2, Fire:0.5, Water:0.5, Electric:0.5, Steel:0.5},
+};
+function calcEff(moveType, defTypes) {
+  const chart = TYPE_EFF[moveType] || {};
+  let m = 1;
+  defTypes.forEach(dt => { if (chart[dt] !== undefined) m *= chart[dt]; });
+  return m;
+}
+
+// =====================================================
+// 技テンプレート
+// =====================================================
+const MV = {
+  ソーラービーム:   {name:'ソーラービーム',  type:'Grass',   power:120,fx:'solar_beam',  dur:0.85},
+  はっぱカッター:   {name:'はっぱカッター',  type:'Grass',   power:55, fx:'razor_leaf',  dur:0.65},
+  メガドレイン:     {name:'メガドレイン',    type:'Grass',   power:60, fx:'razor_leaf',  dur:0.55},
+  ヘドロばくだん:   {name:'ヘドロばくだん',  type:'Poison',  power:90, fx:'sludge_bomb', dur:0.55},
+  ヘドロウェーブ:   {name:'ヘドロウェーブ',  type:'Poison',  power:95, fx:'sludge_wave', dur:0.60},
+  どくどく:         {name:'どくどく',        type:'Poison',  power:40, fx:'sludge_bomb', dur:0.50},
+  ようかいえき:     {name:'ようかいえき',    type:'Poison',  power:65, fx:'sludge_wave', dur:0.55},
+  かえんほうしゃ:   {name:'かえんほうしゃ',  type:'Fire',    power:90, fx:'flamethrower',dur:0.60},
+  ひのこ:           {name:'ひのこ',          type:'Fire',    power:40, fx:'flamethrower',dur:0.50},
+  だいもんじ:       {name:'だいもんじ',      type:'Fire',    power:110,fx:'flamethrower',dur:0.65},
+  ハイドロポンプ:   {name:'ハイドロポンプ',  type:'Water',   power:110,fx:'hydro_pump',  dur:0.55},
+  なみのり:         {name:'なみのり',        type:'Water',   power:90, fx:'hydro_pump',  dur:0.55},
+  バブルこうせん:   {name:'バブルこうせん',  type:'Water',   power:65, fx:'hydro_pump',  dur:0.50},
+  れいとうビーム:   {name:'れいとうビーム',  type:'Ice',     power:90, fx:'ice_beam',    dur:0.55},
+  ふぶき:           {name:'ふぶき',          type:'Ice',     power:110,fx:'ice_beam',    dur:0.60},
+  こおりのつぶて:   {name:'こおりのつぶて',  type:'Ice',     power:40, fx:'ice_beam',    dur:0.45},
+  じゅうまんボルト: {name:'１０まんボルト',  type:'Electric',power:90, fx:'thunderbolt', dur:0.50},
+  かみなり:         {name:'かみなり',        type:'Electric',power:110,fx:'thunderbolt', dur:0.55},
+  でんきショック:   {name:'でんきショック',  type:'Electric',power:40, fx:'thunderbolt', dur:0.45},
+  サイコキネシス:   {name:'サイコキネシス',  type:'Psychic', power:90, fx:'psychic',     dur:0.70},
+  みらいよち:       {name:'みらいよち',      type:'Psychic', power:120,fx:'future_sight',dur:0.90},
+  サイコカッター:   {name:'サイコカッター',  type:'Psychic', power:70, fx:'psychic',     dur:0.60},
+  シャドーボール:   {name:'シャドーボール',  type:'Ghost',   power:80, fx:'shadow_ball', dur:0.55},
+  さいみんじゅつ:   {name:'さいみんじゅつ',  type:'Ghost',   power:50, fx:'hypnosis',    dur:0.80},
+  ゆめくい:         {name:'ゆめくい',        type:'Ghost',   power:100,fx:'shadow_ball', dur:0.60},
+  りゅうのはどう:   {name:'りゅうのはどう',  type:'Dragon',  power:85, fx:'dragon_pulse',dur:0.55},
+  ドラゴンクロー:   {name:'ドラゴンクロー',  type:'Dragon',  power:80, fx:'dragon_claw', dur:0.45},
+  ぼうふう:         {name:'ぼうふう',        type:'Flying',  power:110,fx:'hurricane',   dur:0.70},
+  エアスラッシュ:   {name:'エアスラッシュ',  type:'Flying',  power:75, fx:'air_slash',   dur:0.40},
+  かまいたち:       {name:'かまいたち',      type:'Flying',  power:80, fx:'hurricane',   dur:0.65},
+  つばさでうつ:     {name:'つばさでうつ',    type:'Flying',  power:60, fx:'air_slash',   dur:0.40},
+  むしのさざめき:   {name:'むしのさざめき',  type:'Bug',     power:90, fx:'flash_cannon',dur:0.55},
+  シザークロス:     {name:'シザークロス',    type:'Bug',     power:80, fx:'razor_leaf',  dur:0.55},
+  シグナルビーム:   {name:'シグナルビーム',  type:'Bug',     power:75, fx:'flash_cannon',dur:0.50},
+  はかいこうせん:   {name:'はかいこうせん',  type:'Normal',  power:150,fx:'flash_cannon',dur:0.60},
+  のしかかり:       {name:'のしかかり',      type:'Normal',  power:85, fx:'flash_cannon',dur:0.50},
+  おんがえし:       {name:'おんがえし',      type:'Normal',  power:102,fx:'flash_cannon',dur:0.50},
+  でんこうせっか:   {name:'でんこうせっか',  type:'Normal',  power:40, fx:'flash_cannon',dur:0.40},
+  インファイト:     {name:'インファイト',    type:'Fighting',power:120,fx:'dragon_claw', dur:0.45},
+  クロスチョップ:   {name:'クロスチョップ',  type:'Fighting',power:100,fx:'dragon_claw', dur:0.45},
+  とびひざげり:     {name:'とびひざげり',    type:'Fighting',power:130,fx:'dragon_claw', dur:0.45},
+  かけあし:         {name:'かけあし',        type:'Fighting',power:85, fx:'dragon_claw', dur:0.45},
+  じしん:           {name:'じしん',          type:'Ground',  power:100,fx:'flash_cannon',dur:0.55},
+  マグニチュード:   {name:'マグニチュード',  type:'Ground',  power:70, fx:'flash_cannon',dur:0.50},
+  ほねブーメラン:   {name:'ほねブーメラン',  type:'Ground',  power:50, fx:'flash_cannon',dur:0.45},
+  いわなだれ:       {name:'いわなだれ',      type:'Rock',    power:75, fx:'flash_cannon',dur:0.50},
+  ストーンエッジ:   {name:'ストーンエッジ',  type:'Rock',    power:100,fx:'flash_cannon',dur:0.55},
+  フラッシュキャノン:{name:'フラッシュキャノン',type:'Steel',power:80,fx:'flash_cannon',dur:0.50},
+};
+
+// =====================================================
+// ポケモンデータ（各4技）
+// =====================================================
+const ALL_POKEMON = [
+  {file:'003n.png',name:'フシギバナ',  types:['Grass','Poison'],maxHp:150,atk:82, def:83, spd:80, moves:[MV.ソーラービーム,MV.はっぱカッター,MV.ヘドロばくだん,MV.メガドレイン]},
+  {file:'003s.png',name:'フシギバナ☆', types:['Grass','Poison'],maxHp:150,atk:82, def:83, spd:80, moves:[MV.ソーラービーム,MV.メガドレイン,MV.ヘドロウェーブ,MV.どくどく]},
+  {file:'006n.png',name:'リザードン',  types:['Fire','Flying'], maxHp:140,atk:109,def:78, spd:100,moves:[MV.かえんほうしゃ,MV.ドラゴンクロー,MV.エアスラッシュ,MV.だいもんじ]},
+  {file:'006s.png',name:'リザードン☆', types:['Fire','Flying'], maxHp:140,atk:109,def:78, spd:100,moves:[MV.だいもんじ,MV.ドラゴンクロー,MV.ぼうふう,MV.りゅうのはどう]},
+  {file:'009n.png',name:'カメックス',  types:['Water'],         maxHp:155,atk:83, def:100,spd:78, moves:[MV.ハイドロポンプ,MV.れいとうビーム,MV.フラッシュキャノン,MV.なみのり]},
+  {file:'009s.png',name:'カメックス☆', types:['Water'],         maxHp:155,atk:83, def:100,spd:78, moves:[MV.なみのり,MV.ふぶき,MV.フラッシュキャノン,MV.バブルこうせん]},
+  {file:'012n.png',name:'バタフリー',  types:['Bug','Flying'],  maxHp:120,atk:55, def:50, spd:70, moves:[MV.むしのさざめき,MV.エアスラッシュ,MV.さいみんじゅつ,MV.シグナルビーム]},
+  {file:'015n.png',name:'スピアー',    types:['Bug','Poison'],  maxHp:128,atk:90, def:40, spd:75, moves:[MV.シザークロス,MV.ヘドロばくだん,MV.むしのさざめき,MV.どくどく]},
+  {file:'018n.png',name:'ピジョット',  types:['Normal','Flying'],maxHp:155,atk:80,def:75, spd:101,moves:[MV.ぼうふう,MV.エアスラッシュ,MV.はかいこうせん,MV.つばさでうつ]},
+  {file:'020n.png',name:'ラッタ',      types:['Normal'],        maxHp:113,atk:81, def:60, spd:97, moves:[MV.はかいこうせん,MV.のしかかり,MV.でんこうせっか,MV.おんがえし]},
+  {file:'024n.png',name:'アーボック',  types:['Poison'],        maxHp:120,atk:85, def:69, spd:80, moves:[MV.ヘドロばくだん,MV.どくどく,MV.ようかいえき,MV.ヘドロウェーブ]},
+  {file:'025n.png',name:'ピカチュウ',  types:['Electric'],      maxHp:90, atk:80, def:30, spd:90, moves:[MV.じゅうまんボルト,MV.かみなり,MV.でんこうせっか,MV.でんきショック]},
+  {file:'026n.png',name:'ライチュウ',  types:['Electric'],      maxHp:120,atk:90, def:55, spd:110,moves:[MV.じゅうまんボルト,MV.かみなり,MV.のしかかり,MV.でんきショック]},
+  {file:'031n.png',name:'ニドクイン',  types:['Poison','Ground'],maxHp:165,atk:82,def:87, spd:76, moves:[MV.ヘドロウェーブ,MV.じしん,MV.のしかかり,MV.どくどく]},
+  {file:'034n.png',name:'ニドキング',  types:['Poison','Ground'],maxHp:152,atk:102,def:77,spd:85, moves:[MV.ヘドロばくだん,MV.じしん,MV.はかいこうせん,MV.ヘドロウェーブ]},
+  {file:'038n.png',name:'キュウコン',  types:['Fire'],          maxHp:140,atk:76, def:75, spd:100,moves:[MV.かえんほうしゃ,MV.だいもんじ,MV.シャドーボール,MV.ひのこ]},
+  {file:'045n.png',name:'ラフレシア',  types:['Grass','Poison'],maxHp:143,atk:80, def:85, spd:50, moves:[MV.ソーラービーム,MV.ヘドロウェーブ,MV.どくどく,MV.はっぱカッター]},
+  {file:'047n.png',name:'パラセクト',  types:['Bug','Grass'],   maxHp:120,atk:95, def:80, spd:30, moves:[MV.シザークロス,MV.はっぱカッター,MV.どくどく,MV.むしのさざめき]},
+  {file:'053n.png',name:'ペルシアン',  types:['Normal'],        maxHp:128,atk:70, def:60, spd:115,moves:[MV.でんこうせっか,MV.のしかかり,MV.シャドーボール,MV.おんがえし]},
+  {file:'057n.png',name:'オコリザル',  types:['Fighting'],      maxHp:128,atk:105,def:55, spd:95, moves:[MV.インファイト,MV.クロスチョップ,MV.のしかかり,MV.かけあし]},
+  {file:'059n.png',name:'ウインディ',  types:['Fire'],          maxHp:165,atk:110,def:80, spd:95, moves:[MV.かえんほうしゃ,MV.だいもんじ,MV.のしかかり,MV.ひのこ]},
+  {file:'062n.png',name:'ニョロボン',  types:['Water','Fighting'],maxHp:165,atk:95,def:95,spd:70, moves:[MV.ハイドロポンプ,MV.インファイト,MV.のしかかり,MV.なみのり]},
+  {file:'065s.png',name:'フーディン',  types:['Psychic'],       maxHp:110,atk:135,def:45, spd:120,moves:[MV.サイコキネシス,MV.シャドーボール,MV.みらいよち,MV.サイコカッター]},
+  {file:'068n.png',name:'カイリキー',  types:['Fighting'],      maxHp:165,atk:130,def:80, spd:55, moves:[MV.インファイト,MV.クロスチョップ,MV.のしかかり,MV.とびひざげり]},
+  {file:'071n.png',name:'ウツボット',  types:['Grass','Poison'],maxHp:150,atk:105,def:65, spd:70, moves:[MV.ソーラービーム,MV.ヘドロばくだん,MV.どくどく,MV.ようかいえき]},
+  {file:'076n.png',name:'ゴローニャ',  types:['Rock','Ground'], maxHp:150,atk:110,def:130,spd:45, moves:[MV.ストーンエッジ,MV.じしん,MV.のしかかり,MV.いわなだれ]},
+  {file:'078n.png',name:'ギャロップ',  types:['Fire'],          maxHp:128,atk:100,def:70, spd:105,moves:[MV.かえんほうしゃ,MV.ひのこ,MV.のしかかり,MV.だいもんじ]},
+  {file:'087n.png',name:'ジュゴン',    types:['Water','Ice'],   maxHp:165,atk:70, def:80, spd:70, moves:[MV.なみのり,MV.れいとうビーム,MV.ふぶき,MV.こおりのつぶて]},
+  {file:'089n.png',name:'ベトベトン',  types:['Poison'],        maxHp:188,atk:105,def:75, spd:50, moves:[MV.ヘドロウェーブ,MV.ヘドロばくだん,MV.のしかかり,MV.どくどく]},
+  {file:'091n.png',name:'パルシェン',  types:['Water','Ice'],   maxHp:105,atk:95, def:180,spd:70, moves:[MV.ふぶき,MV.れいとうビーム,MV.バブルこうせん,MV.こおりのつぶて]},
+  {file:'094s.png',name:'ゲンガー',    types:['Ghost','Poison'],maxHp:120,atk:130,def:60, spd:110,moves:[MV.シャドーボール,MV.さいみんじゅつ,MV.ヘドロウェーブ,MV.ゆめくい]},
+  {file:'105n.png',name:'ガラガラ',    types:['Ground'],        maxHp:120,atk:80, def:110,spd:45, moves:[MV.ほねブーメラン,MV.じしん,MV.のしかかり,MV.マグニチュード]},
+  {file:'105s.png',name:'ガラガラ☆',   types:['Ground'],        maxHp:120,atk:80, def:110,spd:45, moves:[MV.ほねブーメラン,MV.マグニチュード,MV.のしかかり,MV.じしん]},
+  {file:'110n.png',name:'マタドガス',  types:['Poison'],        maxHp:128,atk:90, def:120,spd:60, moves:[MV.ヘドロウェーブ,MV.ヘドロばくだん,MV.どくどく,MV.ようかいえき]},
+  {file:'112n.png',name:'サイドン',    types:['Ground','Rock'], maxHp:188,atk:130,def:120,spd:40, moves:[MV.じしん,MV.いわなだれ,MV.のしかかり,MV.ストーンエッジ]},
+  {file:'115n.png',name:'ガルーラ',    types:['Normal'],        maxHp:188,atk:95, def:80, spd:90, moves:[MV.のしかかり,MV.はかいこうせん,MV.おんがえし,MV.でんこうせっか]},
+  {file:'121n.png',name:'スターミー',  types:['Water','Psychic'],maxHp:120,atk:100,def:85,spd:115,moves:[MV.ハイドロポンプ,MV.サイコキネシス,MV.れいとうビーム,MV.なみのり]},
+  {file:'123n.png',name:'ストライク',  types:['Bug','Flying'],  maxHp:135,atk:110,def:80, spd:105,moves:[MV.シザークロス,MV.エアスラッシュ,MV.むしのさざめき,MV.かまいたち]},
+  {file:'130n.png',name:'ギャラドス',  types:['Water','Flying'],maxHp:173,atk:125,def:79, spd:81, moves:[MV.ハイドロポンプ,MV.ぼうふう,MV.のしかかり,MV.なみのり]},
+  {file:'131n.png',name:'ラプラス',    types:['Water','Ice'],   maxHp:215,atk:85, def:80, spd:60, moves:[MV.なみのり,MV.ふぶき,MV.れいとうビーム,MV.こおりのつぶて]},
+  {file:'132n.png',name:'メタモン',    types:['Normal'],        maxHp:102,atk:48, def:48, spd:48, moves:[MV.のしかかり,MV.おんがえし,MV.でんこうせっか,MV.はかいこうせん]},
+  {file:'133n.png',name:'イーブイ',    types:['Normal'],        maxHp:113,atk:55, def:50, spd:55, moves:[MV.でんこうせっか,MV.のしかかり,MV.シャドーボール,MV.おんがえし]},
+  {file:'134n.png',name:'シャワーズ',  types:['Water'],         maxHp:215,atk:110,def:60, spd:65, moves:[MV.ハイドロポンプ,MV.なみのり,MV.バブルこうせん,MV.れいとうビーム]},
+  {file:'135n.png',name:'サンダース',  types:['Electric'],      maxHp:128,atk:110,def:60, spd:130,moves:[MV.じゅうまんボルト,MV.かみなり,MV.でんこうせっか,MV.でんきショック]},
+  {file:'136n.png',name:'ブースター',  types:['Fire'],          maxHp:128,atk:130,def:60, spd:65, moves:[MV.かえんほうしゃ,MV.だいもんじ,MV.のしかかり,MV.ひのこ]},
+  {file:'139n.png',name:'オムスター',  types:['Rock','Water'],  maxHp:135,atk:115,def:125,spd:55, moves:[MV.ハイドロポンプ,MV.いわなだれ,MV.バブルこうせん,MV.なみのり]},
+  {file:'141n.png',name:'カブトプス',  types:['Rock','Water'],  maxHp:120,atk:115,def:105,spd:80, moves:[MV.ストーンエッジ,MV.なみのり,MV.シザークロス,MV.いわなだれ]},
+  {file:'142n.png',name:'プテラ',      types:['Rock','Flying'], maxHp:150,atk:105,def:65, spd:130,moves:[MV.ストーンエッジ,MV.ぼうふう,MV.エアスラッシュ,MV.かまいたち]},
+  {file:'143n.png',name:'カビゴン',    types:['Normal'],        maxHp:220,atk:110,def:65, spd:30, moves:[MV.のしかかり,MV.はかいこうせん,MV.おんがえし,MV.でんこうせっか]},
+  {file:'144n.png',name:'フリーザー',  types:['Ice','Flying'],  maxHp:165,atk:125,def:100,spd:85, moves:[MV.ふぶき,MV.れいとうビーム,MV.ぼうふう,MV.こおりのつぶて]},
+  {file:'145n.png',name:'サンダー',    types:['Electric','Flying'],maxHp:165,atk:125,def:85,spd:100,moves:[MV.かみなり,MV.じゅうまんボルト,MV.エアスラッシュ,MV.でんきショック]},
+  {file:'146n.png',name:'ファイヤー',  types:['Fire','Flying'], maxHp:165,atk:125,def:90, spd:90, moves:[MV.だいもんじ,MV.かえんほうしゃ,MV.ぼうふう,MV.ひのこ]},
+  {file:'149n.png',name:'カイリュー',  types:['Dragon','Flying'],maxHp:160,atk:134,def:95,spd:80, moves:[MV.りゅうのはどう,MV.じゅうまんボルト,MV.ぼうふう,MV.ドラゴンクロー]},
+  {file:'149s.png',name:'カイリュー☆', types:['Dragon','Flying'],maxHp:160,atk:134,def:95,spd:80, moves:[MV.ドラゴンクロー,MV.かみなり,MV.ぼうふう,MV.りゅうのはどう]},
+  {file:'150n.png',name:'ミュウツー',  types:['Psychic'],       maxHp:190,atk:154,def:90, spd:130,moves:[MV.サイコキネシス,MV.みらいよち,MV.シャドーボール,MV.サイコカッター]},
+  {file:'151n.png',name:'ミュウ',      types:['Psychic'],       maxHp:180,atk:100,def:100,spd:100,moves:[MV.サイコキネシス,MV.みらいよち,MV.ソーラービーム,MV.サイコカッター]},
+];
+
+// =====================================================
+// 画像
+// =====================================================
+const IMGS = {};
+let imgsReady = false;
+function preloadImages(done) {
+  let n = 0;
+  ALL_POKEMON.forEach(p => {
+    const img = new Image();
+    img.onload = img.onerror = () => { if (++n === ALL_POKEMON.length) { imgsReady = true; done(); } };
+    img.src = 'character date/' + p.file;
+    IMGS[p.file] = img;
+  });
+}
+
+// =====================================================
+// 効果音（Web Audio API）
+// =====================================================
+let AC = null;
+function initAudio() {
+  if (AC) return;
+  try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+}
+const TYPE_SND = {
+  Fire:     {freq:280, type:'sawtooth', dur:0.20}, Water:    {freq:360, type:'sine',     dur:0.25},
+  Grass:    {freq:300, type:'triangle', dur:0.22}, Electric: {freq:900, type:'square',   dur:0.13},
+  Ice:      {freq:560, type:'sine',     dur:0.22}, Normal:   {freq:240, type:'triangle', dur:0.15},
+  Fighting: {freq:180, type:'sawtooth', dur:0.14}, Psychic:  {freq:620, type:'sine',     dur:0.28},
+  Ghost:    {freq:210, type:'sine',     dur:0.32}, Dragon:   {freq:155, type:'sawtooth', dur:0.28},
+  Poison:   {freq:230, type:'sawtooth', dur:0.20}, Ground:   {freq:130, type:'sawtooth', dur:0.24},
+  Rock:     {freq:165, type:'sawtooth', dur:0.18}, Flying:   {freq:420, type:'sine',     dur:0.20},
+  Bug:      {freq:520, type:'square',   dur:0.14}, Steel:    {freq:720, type:'square',   dur:0.16},
+};
+function playHit(type, eff) {
+  if (!AC) return;
+  try {
+    const s = TYPE_SND[type] || {freq:320, type:'triangle', dur:0.16};
+    const mult = eff >= 2 ? 1.6 : eff <= 0.5 ? 0.65 : 1.0;
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    o.type = s.type;
+    o.frequency.setValueAtTime(s.freq * mult, AC.currentTime);
+    o.frequency.exponentialRampToValueAtTime(s.freq * mult * 0.55, AC.currentTime + s.dur);
+    g.gain.setValueAtTime(eff >= 2 ? 0.33 : 0.18, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + s.dur);
+    o.start(AC.currentTime); o.stop(AC.currentTime + s.dur);
+  } catch(e) {}
+}
+function playKO() {
+  if (!AC) return;
+  try {
+    [520, 410, 310, 190].forEach((freq, i) => {
+      const o = AC.createOscillator(), g = AC.createGain();
+      o.connect(g); g.connect(AC.destination);
+      o.type = 'sine';
+      o.frequency.setValueAtTime(freq, AC.currentTime + i * 0.13);
+      g.gain.setValueAtTime(0.28, AC.currentTime + i * 0.13);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + i * 0.13 + 0.22);
+      o.start(AC.currentTime + i * 0.13); o.stop(AC.currentTime + i * 0.13 + 0.24);
+    });
+  } catch(e) {}
+}
+function playStart() {
+  if (!AC) return;
+  try {
+    [330, 440, 550, 660].forEach((freq, i) => {
+      const o = AC.createOscillator(), g = AC.createGain();
+      o.connect(g); g.connect(AC.destination);
+      o.type = 'square';
+      o.frequency.setValueAtTime(freq, AC.currentTime + i * 0.08);
+      g.gain.setValueAtTime(0.15, AC.currentTime + i * 0.08);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + i * 0.08 + 0.14);
+      o.start(AC.currentTime + i * 0.08); o.stop(AC.currentTime + i * 0.08 + 0.16);
+    });
+  } catch(e) {}
+}
+
+// =====================================================
+// 実況
+// =====================================================
+let commentary = [];
+const MAX_COMM = 14;
+function addCommentary(line1, line2, col, isKO) {
+  commentary.unshift({ line1: line1||'', line2: line2||'', col: col||'#DDD', ts: Date.now(), isKO: !!isKO });
+  if (commentary.length > MAX_COMM) commentary.pop();
+}
+
+// =====================================================
+// キーボード入力
+// =====================================================
+const KEYS = {};
+window.addEventListener('keydown', e => {
+  KEYS[e.code] = true;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { delete KEYS[e.code]; });
+
+// =====================================================
+// Dパッド（バーチャルコントローラー）
+// =====================================================
+const DPAD_ACTIVE = {up:false, down:false, left:false, right:false};
+// DPAD_CX, DPAD_CY, DPAD_SZ, DPAD_STEP, DPAD_RECTS はsetLayout()で設定済み
+function inRect(x, y, r) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
+function isDpadPos(mx, my) {
+  return Object.values(DPAD_RECTS).some(r => inRect(mx, my, r));
+}
+function updateDpadFromTouches(e) {
+  DPAD_ACTIVE.up = false; DPAD_ACTIVE.down = false;
+  DPAD_ACTIVE.left = false; DPAD_ACTIVE.right = false;
+  const rect = c.getBoundingClientRect();
+  const sx = W / rect.width, sy = H / rect.height;
+  for (const t of e.touches) {
+    const tx = (t.clientX - rect.left) * sx;
+    const ty = (t.clientY - rect.top) * sy;
+    if (inRect(tx, ty, DPAD_RECTS.up))    DPAD_ACTIVE.up    = true;
+    if (inRect(tx, ty, DPAD_RECTS.down))  DPAD_ACTIVE.down  = true;
+    if (inRect(tx, ty, DPAD_RECTS.left))  DPAD_ACTIVE.left  = true;
+    if (inRect(tx, ty, DPAD_RECTS.right)) DPAD_ACTIVE.right = true;
+  }
+}
+
+// =====================================================
+// ゲーム状態
+// =====================================================
+let phase = 'loading';
+let fighters = [], activeEffects = [], particles = [], floatingTexts = [];
+let betIdx = -1, playerIdx = -1, countdown = 10, bannerTxt = '', cdInt = null, lastTs = 0;
+
+// =====================================================
+// ファイター初期化
+// =====================================================
+function initFighters() {
+  activeEffects = []; particles = []; floatingTexts = []; commentary = [];
+  betIdx = -1; playerIdx = -1;
+  const shuffled = [...ALL_POKEMON].sort(() => Math.random() - 0.5).slice(0, 6);
+  fighters = shuffled.map((p, i) => {
+    const side = i < 3 ? 0 : 1;
+    const angle = (i / 6) * Math.PI * 2 - Math.PI / 2;
+    return {
+      ...p, id: i, side,
+      x: ACX + Math.cos(angle) * 95,
+      y: ACY + Math.sin(angle) * 95,
+      vx: 0, vy: 0,
+      hp: p.maxHp,
+      radius: isPortrait ? 22 : 28,
+      alive: true,
+      kills: 0,
+      damageDealt: 0,
+      atkTimer: 0,
+      atkCd: Math.max(0.55, 1.7 - p.spd / 120),
+      wanderAng: Math.random() * Math.PI * 2,
+      wanderT: 0,
+      flash: 0,
+      atkGlow: 0,
+      deathT: 1.0,
+      scl: 1.0,
+      sclDir: (Math.random() > .5 ? 1 : -1) * 0.003,
+      _target: null,
+      _targetCd: 0,
+    };
+  });
+}
+
+// =====================================================
+// 物理
+// =====================================================
+function keepInArena(f) {
+  const dx = f.x - ACX, dy = f.y - ACY;
+  const rx = ARX - f.radius, ry = ARY - f.radius;
+  const d = Math.sqrt((dx / rx) ** 2 + (dy / ry) ** 2);
+  if (d > 1) {
+    const sc = 1 / d;
+    f.x = ACX + dx * sc; f.y = ACY + dy * sc;
+    const nx = (dx * sc) / rx, ny = (dy * sc) / ry, m = Math.hypot(nx, ny);
+    const nnx = nx / m, nny = ny / m, dot = f.vx * nnx + f.vy * nny;
+    f.vx = (f.vx - 2 * dot * nnx) * 0.45; f.vy = (f.vy - 2 * dot * nny) * 0.45;
+  }
+}
+
+// =====================================================
+// エフェクト・パーティクル生成
+// =====================================================
+function spawnEffect(att, tgt, move) {
+  const e = { type: move.fx, sx: att.x, sy: att.y, tx: tgt.x, ty: tgt.y, t: 0, dur: move.dur || 0.5 };
+  if (move.fx === 'thunderbolt') {
+    const segs = 9; e.boltPath = [];
+    const startY = tgt.y - 160;
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      e.boltPath.push([tgt.x + (i > 0 && i < segs ? (Math.random() - .5) * 38 : 0), startY + (tgt.y - startY) * t]);
+    }
+  }
+  if (move.fx === 'razor_leaf') {
+    e.leaves = Array.from({length: 10}, () => ({
+      ox: (Math.random() - .5) * 55, oy: (Math.random() - .5) * 55,
+      rot: Math.random() * Math.PI * 2, rotSpd: (Math.random() - .5) * 14, sz: 7 + Math.random() * 7,
+    }));
+  }
+  if (move.fx === 'future_sight') e.starAng = Math.random() * Math.PI * 2;
+  activeEffects.push(e);
+}
+function spawnParticles(x, y, col, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = 30 + Math.random() * 90;
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, col, life: 1.0, sz: 3 + Math.random() * 5 });
+  }
+}
+
+// =====================================================
+// 更新
+// =====================================================
+function update(ts) {
+  if (!lastTs) lastTs = ts;
+  const dt = Math.min((ts - lastTs) / 1000, 0.05);
+  lastTs = ts;
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.87; p.vy *= 0.87;
+    p.life -= dt * 2;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  for (let i = activeEffects.length - 1; i >= 0; i--) {
+    activeEffects[i].t += dt;
+    if (activeEffects[i].t >= activeEffects[i].dur) activeEffects.splice(i, 1);
+  }
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    floatingTexts[i].life -= dt * 1.8;
+    if (floatingTexts[i].life <= 0) floatingTexts.splice(i, 1);
+  }
+
+  const alive = fighters.filter(f => f.alive);
+
+  fighters.forEach(f => {
+    if (!f.alive) { f.deathT = Math.max(0, f.deathT - dt * 1.6); return; }
+    f.flash = Math.max(0, f.flash - dt * 10);
+    f.atkGlow = Math.max(0, f.atkGlow - dt * 3);
+    f.scl += f.sclDir;
+    if (f.scl > 1.06 || f.scl < 0.94) f.sclDir *= -1;
+
+    const isPlayer = (f.id === playerIdx && phase === 'battle');
+
+    // AI専用: ウロウロ + ターゲット管理
+    if (!isPlayer) {
+      f.wanderT += dt;
+      if (f.wanderT > (phase === 'battle' ? 0.55 + Math.random() * 0.55 : 1.3 + Math.random() * 0.8)) {
+        f.wanderT = 0;
+        f.wanderAng += (Math.random() - 0.5) * (phase === 'battle' ? Math.PI * 1.6 : 2.0);
+      }
+      let nearest = null, nearDist = Infinity;
+      alive.forEach(o => {
+        if (o === f) return;
+        const d = Math.hypot(o.x - f.x, o.y - f.y);
+        if (d < nearDist) { nearDist = d; nearest = o; }
+      });
+      f._targetCd = Math.max(0, f._targetCd - dt);
+      if (!f._target || !f._target.alive || f._targetCd <= 0) {
+        const opts = alive.filter(o => o !== f);
+        if (opts.length > 0) {
+          // 近くにプレイヤーがいてランダムで当たった場合だけ狙う
+          const playerFighter = (playerIdx >= 0 && fighters[playerIdx] && fighters[playerIdx].alive && fighters[playerIdx] !== f)
+            ? fighters[playerIdx] : null;
+          const playerDist = playerFighter ? Math.hypot(playerFighter.x - f.x, playerFighter.y - f.y) : Infinity;
+          if (playerFighter && playerDist < 160 && Math.random() < 0.5) {
+            f._target = playerFighter;
+            f._targetCd = 0.8 + Math.random() * 0.8;
+          } else {
+            f._target = (Math.random() < 0.55 && nearest) ? nearest : opts[Math.floor(Math.random() * opts.length)];
+            f._targetCd = 1.0 + Math.random() * 1.8;
+          }
+        }
+      }
+      if (phase === 'battle' && f._target && f._target.alive) {
+        const tgt = f._target;
+        const tdist = Math.hypot(tgt.x - f.x, tgt.y - f.y);
+        const tang = Math.atan2(tgt.y - f.y, tgt.x - f.x);
+        const range = f.radius + tgt.radius + 6;
+        if (tdist < range) {
+          const side = (Math.sin(performance.now() * 0.0018 + f.id * 1.3) > 0) ? 1 : -1;
+          f.vx += Math.cos(tang + Math.PI / 2) * side * 28 * dt;
+          f.vy += Math.sin(tang + Math.PI / 2) * side * 28 * dt;
+        } else {
+          const sp = 82 + f.spd * 0.78;
+          f.vx += Math.cos(tang) * sp * dt;
+          f.vy += Math.sin(tang) * sp * dt;
+        }
+      }
+    }
+
+    // 攻撃チェック（プレイヤー・AI共通）
+    if (phase === 'battle') {
+      const inRange = alive.filter(o => o !== f && Math.hypot(o.x - f.x, o.y - f.y) < f.radius + o.radius + 8);
+      if (inRange.length > 0) {
+        f.atkTimer += dt;
+        if (f.atkTimer >= f.atkCd) {
+          f.atkTimer = 0;
+          const atktgt = inRange[Math.floor(Math.random() * inRange.length)];
+          const move = f.moves[Math.floor(Math.random() * f.moves.length)];
+          const eff = calcEff(move.type, atktgt.types);
+          const dmg = (move.power / 100) * (1 + f.atk / 120) * 5 * (1 - atktgt.def / 400) * (0.75 + Math.random() * .5) * eff;
+          const actualDmg = Math.min(atktgt.hp, dmg);
+          atktgt.hp = Math.max(0, atktgt.hp - dmg);
+          f.damageDealt += actualDmg;
+          atktgt.flash = 1; f.atkGlow = 1;
+          spawnEffect(f, atktgt, move);
+          spawnParticles(atktgt.x, atktgt.y, TC[move.type] || '#FFD700', eff >= 2 ? 8 : 4);
+          playHit(move.type, eff);
+          const effMark = eff >= 2 ? '!!' : eff === 0 ? '×' : '';
+          floatingTexts.push({ text: move.name + effMark, x: f.x, y: f.y - 42, col: TC[move.type] || '#FFD700', life: 1.0 });
+          const effLabel = eff >= 2 ? '★効果抜群！' : eff <= 0.5 && eff > 0 ? '▼いまひとつ' : eff === 0 ? '×無効！' : '';
+          addCommentary(`${f.name}→${atktgt.name}`, `${move.name}${effLabel ? ' ' + effLabel : ''}`, TC[move.type] || '#DDD', false);
+          if (atktgt.hp <= 0) {
+            atktgt.alive = false;
+            f.kills += 1;
+            spawnParticles(atktgt.x, atktgt.y, atktgt.types ? TC[atktgt.types[0]] : '#FFF', 16);
+            addCommentary(`💀 ${atktgt.name}`, '　が倒れた！', '#FF5555', true);
+            playKO();
+          }
+        }
+      } else {
+        f.atkTimer = 0;
+      }
+    }
+
+    // 移動（プレイヤー vs AI）
+    if (isPlayer) {
+      // プレイヤー操作
+      const ms = 265 + f.spd * 1.0;
+      if (KEYS['ArrowUp']    || KEYS['KeyW'] || DPAD_ACTIVE.up)    f.vy -= ms * dt;
+      if (KEYS['ArrowDown']  || KEYS['KeyS'] || DPAD_ACTIVE.down)  f.vy += ms * dt;
+      if (KEYS['ArrowLeft']  || KEYS['KeyA'] || DPAD_ACTIVE.left)  f.vx -= ms * dt;
+      if (KEYS['ArrowRight'] || KEYS['KeyD'] || DPAD_ACTIVE.right) f.vx += ms * dt;
+      f.vx *= 0.82; f.vy *= 0.82;
+      const sp = Math.hypot(f.vx, f.vy), maxSp = ms * 0.75;
+      if (sp > maxSp) { f.vx = f.vx / sp * maxSp; f.vy = f.vy / sp * maxSp; }
+    } else {
+      // AI移動
+      const ws = phase === 'betting' ? 32 : 22;
+      f.vx += Math.cos(f.wanderAng) * ws * dt;
+      f.vy += Math.sin(f.wanderAng) * ws * dt;
+      f.vx *= 0.91; f.vy *= 0.91;
+      const spd = Math.hypot(f.vx, f.vy), ms = phase === 'betting' ? 65 : 138 + f.spd * 0.8;
+      if (spd > ms) { f.vx = f.vx / spd * ms; f.vy = f.vy / spd * ms; }
+    }
+
+    f.x += f.vx * dt; f.y += f.vy * dt;
+    keepInArena(f);
+    fighters.forEach(o => {
+      if (o === f || !o.alive) return;
+      const dx = f.x - o.x, dy = f.y - o.y, dist = Math.hypot(dx, dy), mn = f.radius + o.radius;
+      if (dist < mn && dist > .01) {
+        const push = (mn - dist) / 2;
+        f.x += dx / dist * push; f.y += dy / dist * push;
+        o.x -= dx / dist * push; o.y -= dy / dist * push;
+      }
+    });
+  });
+
+  if (phase === 'battle') {
+    if (fighters.filter(f => f.alive).length <= 1) phase = 'result';
+  }
+}
+
+// =====================================================
+// エフェクト描画
+// =====================================================
+function drawEffects() {
+  activeEffects.forEach(e => {
+    const p = Math.min(1, e.t / e.dur);
+    ctx.save(); FX[e.type] && FX[e.type](ctx, e, p); ctx.restore();
+  });
+}
+function gBeam(ctx, x1, y1, x2, y2, col, gCol, ow, iw) {
+  [[ow, col + '55'], [iw, col], [iw * .35, '#FFFFFF']].forEach(([w, c]) => {
+    ctx.lineWidth = w; ctx.strokeStyle = c;
+    ctx.shadowColor = gCol; ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  });
+}
+function gBurst(ctx, x, y, p, col) {
+  ctx.globalAlpha = (1 - p) * .75;
+  ctx.beginPath(); ctx.arc(x, y, p * 38, 0, Math.PI * 2);
+  ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.shadowColor = col; ctx.shadowBlur = 10; ctx.stroke();
+  ctx.fillStyle = col + '33'; ctx.fill();
+}
+const FX = {
+  solar_beam(ctx, e, p) {
+    const {sx,sy,tx,ty}=e;
+    if(p<.35){const gp=p/.35;ctx.shadowColor='#88FF44';ctx.shadowBlur=22;[22,14,6].forEach((r,i)=>{ctx.globalAlpha=gp*(0.2+i*.3);ctx.beginPath();ctx.arc(sx,sy,r*gp,0,Math.PI*2);ctx.fillStyle=i===2?'#FFFFFF':'rgba(136,255,68,.5)';ctx.fill();});}
+    else{const bp=(p-.35)/.65,ep=Math.min(1,bp*1.4),ex=sx+(tx-sx)*ep,ey=sy+(ty-sy)*ep;gBeam(ctx,sx,sy,ex,ey,'#AAFF44','#88FF44',14,7);ctx.globalAlpha=.9;ctx.beginPath();ctx.arc(ex,ey,9-bp*4,0,Math.PI*2);ctx.fillStyle='#FFFFFF';ctx.fill();if(bp>.82)gBurst(ctx,tx,ty,(bp-.82)/.18,'#88FF44');}
+  },
+  sludge_bomb(ctx, e, p) {
+    const {sx,sy,tx,ty}=e,px=sx+(tx-sx)*p,py=sy+(ty-sy)*p-Math.sin(p*Math.PI)*55;
+    ctx.shadowColor='#9933CC';ctx.shadowBlur=14;const g=ctx.createRadialGradient(px-3,py-3,0,px,py,13);g.addColorStop(0,'#CC88FF');g.addColorStop(1,'#550099');ctx.beginPath();ctx.arc(px,py,13,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+    for(let i=0;i<5;i++){const a=(i/5)*Math.PI*2+p*6;ctx.globalAlpha=.65;ctx.beginPath();ctx.arc(px+Math.cos(a)*10,py+Math.sin(a)*10,4,0,Math.PI*2);ctx.fillStyle='#993399';ctx.fill();}
+    if(p>.82){const sp=(p-.82)/.18;for(let i=0;i<10;i++){const a=(i/10)*Math.PI*2,r=22*sp;ctx.globalAlpha=(1-sp)*.8;ctx.beginPath();ctx.arc(tx+Math.cos(a)*r,ty+Math.sin(a)*r,5*(1-sp)+2,0,Math.PI*2);ctx.fillStyle='#BB44EE';ctx.fill();}}
+  },
+  razor_leaf(ctx, e, p) {
+    const {sx,sy,tx,ty,leaves}=e;
+    leaves.forEach((lf,i)=>{const delay=i*.06,lp=Math.max(0,Math.min(1,(p-delay)/.85));if(lp<=0)return;const x=sx+(tx-sx+lf.ox)*lp,y=sy+(ty-sy+lf.oy)*lp,rot=lf.rot+lp*lf.rotSpd,alpha=lp<.75?1:(1-(lp-.75)/.25);ctx.save();ctx.globalAlpha=alpha*.85;ctx.translate(x,y);ctx.rotate(rot);ctx.shadowColor='#44AA44';ctx.shadowBlur=6;ctx.beginPath();ctx.ellipse(0,0,lf.sz*.55,lf.sz,0,0,Math.PI*2);ctx.fillStyle='#66CC44';ctx.fill();ctx.strokeStyle='#AAFFAA';ctx.lineWidth=1;ctx.stroke();ctx.restore();});
+  },
+  flamethrower(ctx, e, p) {
+    const {sx,sy,tx,ty}=e,dx=tx-sx,dy=ty-sy,dist=Math.hypot(dx,dy),nx=-dy/dist,ny=dx/dist;
+    for(let i=0;i<22;i++){const t=((p*1.3+i*.052)%1),wave=Math.sin(t*11+i)*9,x=sx+dx*t+nx*wave,y=sy+dy*t+ny*wave,sz=5+(1-t)*14;ctx.globalAlpha=Math.max(0,(1-t)*.9);const col=t<.3?'#FFEE44':t<.6?'#FF8800':'#FF2200';ctx.shadowColor=col;ctx.shadowBlur=10;ctx.beginPath();ctx.arc(x,y,sz,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();}
+  },
+  dragon_claw(ctx, e, p) {
+    const {tx,ty}=e,fade=p<.5?p*2:2-p*2;ctx.globalAlpha=fade*.9;ctx.shadowColor='#FF8800';ctx.shadowBlur=10;
+    [[-18,-8,-.45],[0,-18,-.05],[16,-6,.42]].forEach(([ox,oy,rot],i)=>{const delay=i*.07,lp=Math.max(0,Math.min(1,(p-delay)*5));if(!lp)return;ctx.save();ctx.translate(tx+ox,ty+oy);ctx.rotate(rot);ctx.strokeStyle=i===1?'#FFFFFF':'#FF8800';ctx.lineWidth=3-i*.5;ctx.beginPath();ctx.moveTo(0,-16*lp);ctx.lineTo(0,16*lp);ctx.stroke();ctx.restore();});
+  },
+  air_slash(ctx, e, p) {
+    const {tx,ty}=e,fade=p<.4?p/.4:1-(p-.4)/.6;ctx.globalAlpha=fade*.9;ctx.shadowColor='#CCDDFF';ctx.shadowBlur=12;
+    [[tx-18,ty-18,tx+8,ty+22],[tx-8,ty-22,tx+18,ty+14]].forEach(([x1,y1,x2,y2],i)=>{const lp=Math.min(1,p*(2.5+i));[[6,'rgba(180,220,255,.55)'],[3,'#AACCFF'],[1.5,'#FFFFFF']].forEach(([w,col])=>{ctx.lineWidth=w;ctx.strokeStyle=col;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x1+(x2-x1)*lp,y1+(y2-y1)*lp);ctx.stroke();});});
+  },
+  hydro_pump(ctx, e, p) {
+    const {sx,sy,tx,ty}=e,dx=tx-sx,dy=ty-sy,dist=Math.hypot(dx,dy),nx=-dy/dist*8,ny=dx/dist*8;
+    ctx.shadowColor='#2288FF';ctx.shadowBlur=14;
+    [-1,1].forEach(s=>{const ep=Math.min(1,p*1.45),ex=sx+(tx-sx)*ep+nx*s+Math.sin(p*22)*4*s,ey=sy+(ty-sy)*ep+ny*s+Math.cos(p*22)*4*s;ctx.globalAlpha=.85;ctx.lineWidth=7;ctx.strokeStyle='#2288FF';ctx.beginPath();ctx.moveTo(sx+nx*s,sy+ny*s);ctx.lineTo(ex,ey);ctx.stroke();ctx.lineWidth=3;ctx.strokeStyle='#AADDFF';ctx.beginPath();ctx.moveTo(sx+nx*s,sy+ny*s);ctx.lineTo(sx+(tx-sx)*ep+nx*s,sy+(ty-sy)*ep+ny*s);ctx.stroke();});
+    if(p>.7){const sp=(p-.7)/.3;for(let i=0;i<9;i++){const a=(i/9)*Math.PI*2,r=22*sp;ctx.globalAlpha=(1-sp)*.75;ctx.beginPath();ctx.arc(tx+Math.cos(a)*r,ty+Math.sin(a)*r,5,0,Math.PI*2);ctx.fillStyle='#88CCFF';ctx.fill();}}
+  },
+  ice_beam(ctx, e, p) {
+    const {sx,sy,tx,ty}=e,ep=Math.min(1,p*1.5),ex=sx+(tx-sx)*ep,ey=sy+(ty-sy)*ep;
+    gBeam(ctx,sx,sy,ex,ey,'#88CCFF','#44AAFF',10,5);
+    if(p>.35){const ip=(p-.35)/.65;for(let i=0;i<8;i++){const a=(i/8)*Math.PI*2+p*4,r=8+ip*18;ctx.globalAlpha=(1-ip)*.75;ctx.strokeStyle='#AADDFF';ctx.lineWidth=2;ctx.shadowColor='#44AAFF';ctx.shadowBlur=8;const cx2=ex+Math.cos(a)*r,cy2=ey+Math.sin(a)*r;ctx.beginPath();ctx.moveTo(cx2-5*Math.cos(a),cy2-5*Math.sin(a));ctx.lineTo(cx2+5*Math.cos(a),cy2+5*Math.sin(a));ctx.stroke();}}
+    if(p>.8)gBurst(ctx,tx,ty,(p-.8)/.2,'#88CCFF');
+  },
+  flash_cannon(ctx, e, p) {
+    const {sx,sy,tx,ty}=e,ep=Math.min(1,p*1.8);gBeam(ctx,sx,sy,sx+(tx-sx)*ep,sy+(ty-sy)*ep,'#CCDDFF','#AABBFF',12,6);
+    if(p>.45){const rp=(p-.45)/.55;[1,2,3].forEach(i=>{ctx.globalAlpha=(1-rp)/(i*.8);ctx.beginPath();ctx.arc(tx,ty,rp*32*i/3,0,Math.PI*2);ctx.strokeStyle='#EEEEFF';ctx.lineWidth=5-i;ctx.shadowColor='#AAAAFF';ctx.shadowBlur=12;ctx.stroke();});}
+  },
+  shadow_ball(ctx, e, p) {
+    const {sx,sy,tx,ty}=e,x=sx+(tx-sx)*p,y=sy+(ty-sy)*p;
+    for(let i=5;i>0;i--){const tp=Math.max(0,p-i*.045);ctx.globalAlpha=(1-i/6)*.38;ctx.beginPath();ctx.arc(sx+(tx-sx)*tp,sy+(ty-sy)*tp,11-i*1.5,0,Math.PI*2);ctx.fillStyle='#440088';ctx.fill();}
+    ctx.globalAlpha=.96;ctx.shadowColor='#7722BB';ctx.shadowBlur=18;const g=ctx.createRadialGradient(x-4,y-4,0,x,y,15);g.addColorStop(0,'#BB66FF');g.addColorStop(1,'#220044');ctx.beginPath();ctx.arc(x,y,15,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+    for(let i=0;i<6;i++){const a=(i/6)*Math.PI*2+p*9;ctx.globalAlpha=.5;ctx.beginPath();ctx.arc(x+Math.cos(a)*11,y+Math.sin(a)*11,5,0,Math.PI*2);ctx.fillStyle='#330066';ctx.fill();}
+    if(p>.82)gBurst(ctx,tx,ty,(p-.82)/.18,'#8833CC');
+  },
+  future_sight(ctx, e, p) {
+    const {tx,ty,starAng}=e;
+    if(p<.45){const ap=p/.45,fy=ty-70+ap*12;ctx.globalAlpha=ap*.9;ctx.shadowColor='#FFFF88';ctx.shadowBlur=20;ctx.translate(tx,fy);ctx.rotate(starAng+p*5);ctx.fillStyle='#FFFF88';for(let i=0;i<5;i++){const a=(i/5)*Math.PI*2-Math.PI/2,r=ap*28;ctx.beginPath();ctx.arc(Math.cos(a)*r,Math.sin(a)*r,5*ap,0,Math.PI*2);ctx.fill();}ctx.beginPath();ctx.arc(0,0,9*ap,0,Math.PI*2);ctx.fillStyle='#FFFFAA';ctx.fill();}
+    else{const sp=(p-.45)/.55,startY=ty-70+12,endY=startY+(ty-startY)*Math.min(1,sp*2);ctx.globalAlpha=1-sp*.4;gBeam(ctx,tx,startY,tx,endY,'#FFFF44','#FFFF00',10,5);if(sp>.75)gBurst(ctx,tx,ty,(sp-.75)/.25,'#FFFF44');}
+  },
+  psychic(ctx, e, p) {
+    const {sx,sy,tx,ty}=e;
+    for(let i=0;i<3;i++){const rp=Math.max(0,Math.min(1,p*3-i));if(rp<=0)continue;const cx=sx+(tx-sx)*rp,cy=sy+(ty-sy)*rp;ctx.globalAlpha=(1-rp)*.75;ctx.shadowColor='#FF44FF';ctx.shadowBlur=12;ctx.strokeStyle='#FF88FF';ctx.lineWidth=3;ctx.beginPath();ctx.arc(cx,cy,8+rp*28,0,Math.PI*2);ctx.stroke();ctx.strokeStyle='#FF44FF';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(cx,cy,14+rp*28,0,Math.PI*2);ctx.stroke();}
+    if(p>.82)gBurst(ctx,tx,ty,(p-.82)/.18,'#FF44FF');
+  },
+  hypnosis(ctx, e, p) {
+    const {sx,sy,tx,ty}=e;
+    for(let i=0;i<4;i++){const rp=(p+i*.26)%1,rx=sx+(tx-sx)*rp,ry=sy+(ty-sy)*rp,r=5+rp*20;ctx.globalAlpha=(1-rp)*.7;ctx.shadowColor='#4466FF';ctx.shadowBlur=9;ctx.strokeStyle=`hsl(${220+i*18},75%,62%)`;ctx.lineWidth=2;ctx.beginPath();for(let a=0;a<Math.PI*2;a+=.12){const sr=r*(a/(Math.PI*2)),px=rx+Math.cos(a+p*7)*sr,py=ry+Math.sin(a+p*7)*sr;a<.13?ctx.moveTo(px,py):ctx.lineTo(px,py);}ctx.stroke();}
+  },
+  sludge_wave(ctx, e, p) {
+    const {tx,ty}=e;[0,.14,.28].forEach((off,i)=>{const wp=Math.max(0,Math.min(1,(p-off)*1.2));if(!wp)return;const r=wp*55;ctx.globalAlpha=(1-wp)*.65/(i+1);ctx.shadowColor='#9944AA';ctx.shadowBlur=9;ctx.strokeStyle=i===0?'#CC55FF':'#7722BB';ctx.lineWidth=6-i*2;ctx.beginPath();ctx.arc(tx,ty,r,0,Math.PI*2);ctx.stroke();if(i===0){for(let j=0;j<9;j++){const a=(j/9)*Math.PI*2+wp*3;ctx.globalAlpha=(1-wp)*.5;ctx.beginPath();ctx.arc(tx+Math.cos(a)*r,ty+Math.sin(a)*r,5*(1-wp),0,Math.PI*2);ctx.fillStyle='#AA44FF';ctx.fill();}}});
+  },
+  dragon_pulse(ctx, e, p) {
+    const {sx,sy,tx,ty}=e,x=sx+(tx-sx)*p,y=sy+(ty-sy)*p;
+    for(let i=2;i>=0;i--){ctx.globalAlpha=(.28-i*.08)*(1-p*.4);ctx.beginPath();ctx.arc(x,y,18+i*12,0,Math.PI*2);ctx.strokeStyle='#44FFCC';ctx.lineWidth=3;ctx.shadowColor='#00DDBB';ctx.shadowBlur=10;ctx.stroke();}
+    ctx.globalAlpha=.92;ctx.shadowColor='#00EEBB';ctx.shadowBlur=22;const g=ctx.createRadialGradient(x-5,y-5,0,x,y,17);g.addColorStop(0,'#AAFFEE');g.addColorStop(.5,'#44FFCC');g.addColorStop(1,'#004488');ctx.beginPath();ctx.arc(x,y,17,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+    for(let i=0;i<6;i++){const a=(i/6)*Math.PI*2+p*5;ctx.globalAlpha=.55;ctx.strokeStyle='#00FFAA';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(x+Math.cos(a)*11,y+Math.sin(a)*11,5,a,a+Math.PI);ctx.stroke();}
+    if(p>.78)gBurst(ctx,tx,ty,(p-.78)/.22,'#44FFCC');
+  },
+  thunderbolt(ctx, e, p) {
+    const {tx,ty,boltPath}=e,flash=p<.15?p/.15:p>.8?(1-p)/.2:1;
+    ctx.globalAlpha=flash*.95;ctx.shadowColor='#FFFF44';ctx.shadowBlur=22;
+    [[9,'rgba(255,255,200,.45)'],[4,'#FFFF44'],[2,'#FFFFFF']].forEach(([w,col])=>{ctx.lineWidth=w;ctx.strokeStyle=col;ctx.beginPath();ctx.moveTo(boltPath[0][0],boltPath[0][1]);boltPath.forEach(pt=>ctx.lineTo(pt[0],pt[1]));ctx.stroke();});
+    if(p>.65){const ip=(p-.65)/.35;ctx.globalAlpha=(1-ip)*.8;ctx.fillStyle='rgba(255,255,0,.38)';ctx.beginPath();ctx.arc(tx,ty,28*ip,0,Math.PI*2);ctx.fill();for(let i=0;i<6;i++){const a=(i/6)*Math.PI*2;ctx.strokeStyle='#FFFF44';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(tx+Math.cos(a)*22*ip,ty+Math.sin(a)*22*ip);ctx.stroke();}}
+  },
+  hurricane(ctx, e, p) {
+    const {tx,ty}=e,maxR=58;
+    for(let i=0;i<32;i++){const t=(i/32+p*.75)%1,ang=t*Math.PI*4+p*6,r=t*maxR,x=tx+Math.cos(ang)*r,y=ty+Math.sin(ang)*r*.5,sz=3.5*(1-t),alpha=(1-t)*.75*(p<.2?p*5:p>.8?(1-p)*5:1);ctx.globalAlpha=alpha;ctx.fillStyle=t<.5?'#99BBFF':'#DDEEFF';ctx.shadowColor='#88AAFF';ctx.shadowBlur=5;ctx.beginPath();ctx.arc(x,y,sz,0,Math.PI*2);ctx.fill();}
+  },
+};
+
+// =====================================================
+// フィールド描画
+// =====================================================
+function drawArena() {
+  const rx=ARX+6,ry=ARY+6,cut=.22;
+  const pts=[[ACX-rx*(1-cut),ACY-ry],[ACX+rx*(1-cut),ACY-ry],[ACX+rx,ACY-ry*cut],[ACX+rx,ACY+ry*cut],[ACX+rx*(1-cut),ACY+ry],[ACX-rx*(1-cut),ACY+ry],[ACX-rx,ACY+ry*cut],[ACX-rx,ACY-ry*cut]];
+  ctx.save();ctx.shadowColor='rgba(0,0,0,.5)';ctx.shadowBlur=18;ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);pts.forEach(p=>ctx.lineTo(p[0],p[1]));ctx.closePath();
+  const g=ctx.createRadialGradient(ACX,ACY,0,ACX,ACY,Math.max(rx,ry));g.addColorStop(0,'#DDD0A8');g.addColorStop(1,'#C4B48A');ctx.fillStyle=g;ctx.fill();ctx.strokeStyle='#A89060';ctx.lineWidth=4;ctx.stroke();ctx.restore();
+  const rx2=rx-9,ry2=ry-9,cut2=.22;
+  const pts2=[[ACX-rx2*(1-cut2),ACY-ry2],[ACX+rx2*(1-cut2),ACY-ry2],[ACX+rx2,ACY-ry2*cut2],[ACX+rx2,ACY+ry2*cut2],[ACX+rx2*(1-cut2),ACY+ry2],[ACX-rx2*(1-cut2),ACY+ry2],[ACX-rx2,ACY+ry2*cut2],[ACX-rx2,ACY-ry2*cut2]];
+  ctx.beginPath();ctx.moveTo(pts2[0][0],pts2[0][1]);pts2.forEach(p=>ctx.lineTo(p[0],p[1]));ctx.closePath();ctx.strokeStyle='#B8A070';ctx.lineWidth=2;ctx.stroke();
+}
+
+// =====================================================
+// ポケモン描画
+// =====================================================
+function drawFighters() {
+  fighters.forEach(f => {
+    if (f.deathT <= 0) return;
+    const img = IMGS[f.file];
+    const isPlayer = f.id === playerIdx;
+    ctx.save();
+    ctx.globalAlpha = f.alive ? 1 : Math.max(0, f.deathT);
+
+    // プレイヤーポケモン: 輝くリング
+    if (isPlayer && f.alive) {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.005);
+      ctx.globalAlpha = 0.55 + pulse * 0.4;
+      ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 4;
+      ctx.shadowColor = '#FFD700'; ctx.shadowBlur = 18 + pulse * 10;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.radius + 10, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = f.alive ? 1 : Math.max(0, f.deathT);
+    }
+
+    if (f.atkGlow > 0) {
+      ctx.globalAlpha = f.atkGlow * .7;
+      ctx.shadowColor = TC[f.types[0]] || '#FFD700'; ctx.shadowBlur = 22;
+      ctx.strokeStyle = TC[f.types[0]] || '#FFD700'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.radius + 8, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = f.alive ? 1 : Math.max(0, f.deathT);
+    }
+    ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
+    ctx.beginPath(); ctx.ellipse(f.x, f.y + f.radius - 4, f.radius * .7, f.radius * .22, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.fill();
+    const sc = f.alive ? f.scl : f.deathT;
+    const sw = f.radius * 2.6, sh = f.radius * 2.6;
+    ctx.translate(f.x, f.y); ctx.scale(sc, sc);
+    if (img && img.complete && img.naturalWidth > 0) {
+      ctx.imageSmoothingEnabled = false;
+      if (f.flash > 0) {
+        ctx.globalAlpha = f.flash * .75; ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath(); ctx.ellipse(0, 0, sw / 2, sh / 2, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = f.alive ? 1 : Math.max(0, f.deathT);
+      }
+      ctx.drawImage(img, -sw / 2, -sh / 2, sw, sh);
+    } else {
+      ctx.beginPath(); ctx.arc(0, 0, f.radius, 0, Math.PI * 2);
+      ctx.fillStyle = f.flash > 0 ? '#FFF' : TC[f.types[0]] || '#888'; ctx.fill();
+    }
+    if (betIdx === f.id && phase === 'betting') {
+      ctx.scale(1 / sc, 1 / sc);
+      ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 3;
+      ctx.setLineDash([7, 4]); ctx.lineDashOffset = -performance.now() * .06;
+      ctx.beginPath(); ctx.arc(0, 0, f.radius + 9, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+
+    // 名前タグ（バトル中）
+    if (phase === 'battle' && f.alive) {
+      ctx.save();
+      if (isPlayer) {
+        // プレイヤー：金色の「★あなた」
+        ctx.font = 'bold 10px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillStyle = '#FFD700'; ctx.shadowColor = '#000'; ctx.shadowBlur = 5;
+        ctx.fillText('★あなた', f.x, f.y - f.radius - 16);
+      }
+      ctx.font = 'bold 9px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillStyle = isPlayer ? '#FFD700' : '#FFF';
+      ctx.shadowColor = '#000'; ctx.shadowBlur = 4;
+      ctx.fillText(f.name, f.x, f.y - f.radius - (isPlayer ? 4 : 4));
+      ctx.restore();
+    }
+  });
+}
+
+// =====================================================
+// パーティクル描画
+// =====================================================
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.save(); ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.col; ctx.shadowColor = p.col; ctx.shadowBlur = 5;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.sz * p.life, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  });
+}
+
+// =====================================================
+// 浮き文字描画
+// =====================================================
+function drawFloatingTexts() {
+  floatingTexts.forEach(ft => {
+    ctx.save(); ctx.globalAlpha = ft.life;
+    ctx.font = 'bold 11px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillStyle = ft.col; ctx.shadowColor = '#000'; ctx.shadowBlur = 5;
+    ctx.fillText(ft.text, ft.x, ft.y - (1 - ft.life) * 22);
+    ctx.restore();
+  });
+}
+
+// =====================================================
+// サイドパネル
+// =====================================================
+function drawPanels() {
+  const panelH = isPortrait ? COMM_Y : H;
+  // 左パネル背景
+  ctx.fillStyle = '#181818';
+  ctx.beginPath();
+  if (!isPortrait) {
+    ctx.moveTo(0, 0); ctx.lineTo(PW + 10, 0); ctx.lineTo(PW - 8, panelH); ctx.lineTo(0, panelH);
+    ctx.closePath();
+  } else {
+    ctx.rect(0, 0, PW, panelH);
+  }
+  ctx.fill();
+  // 右パネル背景
+  ctx.fillRect(RP_X, 0, PW, panelH);
+  ctx.strokeStyle = '#282828'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(RP_X, 0); ctx.lineTo(RP_X, panelH); ctx.stroke();
+
+  const leftF = fighters.filter(f => f.side === 0);
+  const rightF = fighters.filter(f => f.side === 1);
+  if (isPortrait) {
+    const entryH = Math.floor((COMM_Y - 8) / 3);
+    leftF.forEach((f, i)  => drawEntryPortrait(f, 0,    4 + i * entryH, PW,  entryH - 3));
+    rightF.forEach((f, i) => drawEntryPortrait(f, RP_X, 4 + i * entryH, PW,  entryH - 3));
+  } else {
+    const entryH = Math.floor((H - 20) / 3);
+    leftF.forEach((f, i)  => drawEntry(f, 5,       10 + i * entryH, PW - 12, entryH - 5, 'left'));
+    rightF.forEach((f, i) => drawEntry(f, RP_X + 3, 10 + i * entryH, PW - 10, entryH - 5, 'right'));
+  }
+}
+
+// 縦持ちパネルエントリ（76px幅、コンパクト）
+function drawEntryPortrait(f, x, y, w, h) {
+  ctx.save();
+  if (!f.alive) ctx.globalAlpha = .33;
+  const isPlayer = f.id === playerIdx;
+  if (betIdx === f.id) {
+    ctx.fillStyle = isPlayer ? 'rgba(255,215,0,.22)' : 'rgba(255,215,0,.12)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, w, h);
+  }
+  const img = IMGS[f.file];
+  const sz = 38, imgX = x + (w - sz) / 2, imgY = y + 3;
+  if (img && img.complete && img.naturalWidth > 0) {
+    ctx.imageSmoothingEnabled = false; ctx.drawImage(img, imgX, imgY, sz, sz);
+  } else {
+    ctx.fillStyle = TC[f.types[0]] || '#888';
+    ctx.beginPath(); ctx.arc(imgX + sz/2, imgY + sz/2, sz/2, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.font = '7px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillStyle = isPlayer ? '#FFD700' : '#AAFFAA';
+  let nm = (isPlayer ? '★' : '') + f.name;
+  while (nm.length > 1 && ctx.measureText(nm).width > w - 4) nm = nm.slice(0, -1);
+  ctx.fillText(nm, x + w/2, y + sz + 5);
+  const barX = x + 3, barY = y + h - 16, barW = w - 6, barH = 7;
+  ctx.fillStyle = '#2a2a2a'; ctx.fillRect(barX, barY, barW, barH);
+  const pct = Math.max(0, f.hp / f.maxHp);
+  ctx.fillStyle = pct > .5 ? '#44CC44' : pct > .25 ? '#FFAA00' : '#CC2222';
+  ctx.fillRect(barX, barY, barW * pct, barH);
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 1; ctx.strokeRect(barX, barY, barW, barH);
+  ctx.restore();
+}
+
+// 横持ちパネルエントリ（従来）
+function drawEntry(f, x, y, w, h, side) {
+  ctx.save();
+  if (!f.alive) ctx.globalAlpha = .33;
+  const isPlayer = f.id === playerIdx;
+  if (betIdx === f.id) {
+    ctx.fillStyle = isPlayer ? 'rgba(255,215,0,.25)' : 'rgba(255,215,0,.15)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+  }
+  const img = IMGS[f.file];
+  const thumbW = 44, thumbH = 44;
+  const tx2 = side === 'left' ? x + 4 : x + w - thumbW - 4;
+  const ty2 = y + 4;
+  if (img && img.complete && img.naturalWidth > 0) {
+    ctx.imageSmoothingEnabled = false; ctx.drawImage(img, tx2, ty2, thumbW, thumbH);
+  } else {
+    ctx.fillStyle = TC[f.types[0]] || '#888';
+    ctx.beginPath(); ctx.arc(tx2 + thumbW / 2, ty2 + thumbH / 2, thumbW / 2, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.font = 'bold 10px Courier New'; ctx.textBaseline = 'top';
+  const nameCol = isPlayer ? '#FFD700' : '#AAFFAA';
+  if (side === 'left') {
+    ctx.fillStyle = nameCol; ctx.textAlign = 'left';
+    ctx.fillText((isPlayer ? '★' : '') + f.name, tx2 + thumbW + 4, y + 5);
+  } else {
+    ctx.fillStyle = nameCol; ctx.textAlign = 'right';
+    ctx.fillText(f.name + (isPlayer ? '★' : ''), tx2 - 4, y + 5);
+  }
+  f.types.forEach((tp, i) => {
+    const bw = 34, bh = 10;
+    ctx.fillStyle = TC[tp] || '#888';
+    if (side === 'left') { ctx.fillRect(tx2 + thumbW + 4 + (bw + 3) * i, y + 20, bw, bh); }
+    else { ctx.fillRect(tx2 - 4 - (bw + 3) * (i + 1) + 1, y + 20, bw, bh); }
+    ctx.font = '7px Courier New'; ctx.fillStyle = '#FFF'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const bx2 = side === 'left' ? tx2 + thumbW + 4 + (bw + 3) * i + bw / 2 : tx2 - 4 - (bw + 3) * i - bw / 2;
+    ctx.fillText(tp.toUpperCase(), bx2, y + 25);
+  });
+  const barX = x + 4, barY = y + h - 36, barW = w - 8, barH = 10;
+  ctx.fillStyle = '#2a2a2a'; ctx.fillRect(barX, barY, barW, barH);
+  const pct = Math.max(0, f.hp / f.maxHp);
+  ctx.fillStyle = pct > .5 ? '#44CC44' : pct > .25 ? '#FFAA00' : '#CC2222';
+  ctx.fillRect(barX, barY, barW * pct, barH);
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 1; ctx.strokeRect(barX, barY, barW, barH);
+  ctx.font = '8px Courier New'; ctx.fillStyle = '#bbb';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText(Math.ceil(f.hp) + '/' + f.maxHp, barX + barW / 2, barY + 12);
+  ctx.restore();
+}
+
+// =====================================================
+// Dパッド描画
+// =====================================================
+function drawDpad() {
+  if (phase !== 'battle') return;
+  const pf = playerIdx >= 0 ? fighters[playerIdx] : null;
+
+  // 縦持ち：Dパッドエリアの背景＋プレイヤー情報を常に描画
+  if (isPortrait) {
+    const areaY = COMM_Y + COMM_H;
+    ctx.fillStyle = '#1a1a2a'; ctx.fillRect(0, areaY, W, H - areaY);
+    if (pf) {
+      ctx.font = 'bold 12px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillStyle = pf.alive ? '#FFD700' : '#FF6666';
+      ctx.shadowColor = '#000'; ctx.shadowBlur = 4;
+      ctx.fillText(pf.alive ? `🎮 ${pf.name} で操作中` : `💔 ${pf.name} が倒れた…観戦中`, W/2, areaY + 8);
+      ctx.shadowBlur = 0;
+      const bw2 = 220, bx2 = W/2 - 110, by2 = areaY + 28;
+      ctx.fillStyle = '#2a2a2a'; ctx.fillRect(bx2, by2, bw2, 10);
+      const pct2 = Math.max(0, pf.hp / pf.maxHp);
+      ctx.fillStyle = pct2 > .5 ? '#44CC44' : pct2 > .25 ? '#FFAA00' : '#CC2222';
+      ctx.fillRect(bx2, by2, bw2 * pct2, 10);
+      ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.strokeRect(bx2, by2, bw2, 10);
+      ctx.font = '9px Courier New'; ctx.fillStyle = '#888'; ctx.textBaseline = 'top';
+      ctx.fillText(`${Math.ceil(pf.hp)} / ${pf.maxHp} HP`, W/2, by2 + 12);
+    }
+    if (!pf || !pf.alive) return;
+  } else {
+    if (!pf || !pf.alive) return;
+  }
+
+  const dirs = [
+    {key:'up',    label:'↑', dx:0,          dy:-DPAD_STEP},
+    {key:'down',  label:'↓', dx:0,          dy: DPAD_STEP},
+    {key:'left',  label:'←', dx:-DPAD_STEP, dy:0},
+    {key:'right', label:'→', dx: DPAD_STEP, dy:0},
+  ];
+  ctx.save();
+  ctx.globalAlpha = isPortrait ? 0.92 : 0.65;
+  ctx.fillStyle = '#FFD700';
+  ctx.font = (isPortrait ? 'bold 11px' : 'bold 9px') + ' Courier New';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  ctx.shadowColor = '#000'; ctx.shadowBlur = 3;
+  ctx.fillText('タッチ操作', DPAD_CX, DPAD_CY - DPAD_STEP - DPAD_SZ / 2 - 6);
+  dirs.forEach(d => {
+    const r = DPAD_RECTS[d.key];
+    const isActive = DPAD_ACTIVE[d.key] || KEYS['Arrow' + d.key.charAt(0).toUpperCase() + d.key.slice(1)] ||
+      (d.key==='up'&&KEYS['KeyW']) || (d.key==='down'&&KEYS['KeyS']) ||
+      (d.key==='left'&&KEYS['KeyA']) || (d.key==='right'&&KEYS['KeyD']);
+    ctx.fillStyle = isActive ? 'rgba(255,215,0,0.88)' : 'rgba(30,30,60,0.82)';
+    ctx.beginPath(); ctx.roundRect(r.x, r.y, r.w, r.h, isPortrait ? 12 : 7); ctx.fill();
+    ctx.strokeStyle = isActive ? '#FFD700' : '#555'; ctx.lineWidth = isActive ? 2.5 : 1.5;
+    ctx.stroke();
+    ctx.fillStyle = isActive ? '#000' : '#FFF';
+    ctx.font = (isPortrait ? 'bold 24px' : 'bold 18px') + ' Courier New';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(d.label, DPAD_CX + d.dx, DPAD_CY + d.dy);
+  });
+  ctx.restore();
+}
+
+// =====================================================
+// 実況パネル
+// =====================================================
+function drawCommentary() {
+  if (isPortrait) {
+    // 縦持ち：横帯ストリップ
+    const y0 = COMM_Y;
+    ctx.fillStyle = '#0a0a18'; ctx.fillRect(0, y0, W, COMM_H);
+    ctx.strokeStyle = '#223'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(W, y0); ctx.stroke();
+    ctx.fillStyle = '#111133'; ctx.fillRect(0, y0, W, 22);
+    ctx.fillStyle = '#FFD700'; ctx.font = 'bold 11px Courier New';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#884400'; ctx.shadowBlur = 6;
+    ctx.fillText('📺 実況', W/2, y0 + 11); ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#FFD70044'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(4, y0 + 22); ctx.lineTo(W - 4, y0 + 22); ctx.stroke();
+    const eH = Math.floor((COMM_H - 24) / 3), maxEnt = 3;
+    commentary.slice(0, maxEnt).forEach((entry, i) => {
+      const ey = y0 + 24 + i * eH;
+      const alpha = Math.max(0.15, 1 - (Date.now() - entry.ts) / 18000);
+      ctx.save(); ctx.globalAlpha = alpha;
+      if (entry.isKO) { ctx.fillStyle = 'rgba(255,50,50,0.1)'; ctx.fillRect(2, ey, W - 4, eH - 1); }
+      ctx.fillStyle = entry.col; ctx.fillRect(3, ey + 2, 3, eH - 4);
+      ctx.fillStyle = entry.isKO ? '#FF8888' : '#CCC';
+      ctx.font = (entry.isKO ? 'bold ' : '') + '9px Courier New';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.shadowColor = '#000'; ctx.shadowBlur = 2;
+      let l1 = entry.line1;
+      while (l1.length > 0 && ctx.measureText(l1).width > W - 50) l1 = l1.slice(0, -1);
+      ctx.fillText(l1, 12, ey + 2);
+      if (entry.line2) {
+        ctx.fillStyle = entry.col; ctx.font = 'bold 9px Courier New';
+        ctx.fillText(entry.line2, 12, ey + 13);
+      }
+      if (entry.isKO) { ctx.fillStyle = '#FF4444'; ctx.font = 'bold 10px Courier New'; ctx.textAlign = 'right'; ctx.fillText('KO!', W - 6, ey + 2); }
+      ctx.restore();
+    });
+    if (commentary.length === 0) {
+      ctx.fillStyle = '#555'; ctx.font = '10px Courier New';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('バトル開始待ち...', W/2, y0 + COMM_H/2);
+    }
+  } else {
+    // 横持ち：右サイドパネル
+    ctx.fillStyle = '#0a0a18'; ctx.fillRect(CP_X, 0, CW, H);
+    ctx.strokeStyle = '#223'; ctx.lineWidth = 1; ctx.strokeRect(CP_X, 0, CW, H);
+    ctx.fillStyle = '#111133'; ctx.fillRect(CP_X, 0, CW, 28);
+    ctx.fillStyle = '#FFD700'; ctx.font = 'bold 12px Courier New';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#884400'; ctx.shadowBlur = 8;
+    ctx.fillText('📺  実  況', CP_X + CW / 2, 14); ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#FFD70066'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(CP_X + 4, 28); ctx.lineTo(CP_X + CW - 4, 28); ctx.stroke();
+    const entryH = 37, startY = 32;
+    commentary.forEach((entry, i) => {
+      const y = startY + i * entryH;
+      if (y + entryH > H) return;
+      const age = (Date.now() - entry.ts) / 1000;
+      const alpha = Math.max(0.12, 1 - age / 22);
+      ctx.save(); ctx.globalAlpha = alpha;
+      if (entry.isKO) { ctx.fillStyle = 'rgba(255,50,50,0.12)'; ctx.fillRect(CP_X + 1, y, CW - 2, entryH - 2); }
+      ctx.fillStyle = entry.col; ctx.fillRect(CP_X + 3, y + 2, 3, entryH - 5);
+      ctx.fillStyle = entry.isKO ? '#FF8888' : '#CCC';
+      ctx.font = (entry.isKO ? 'bold ' : '') + '9px Courier New';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.shadowColor = '#000'; ctx.shadowBlur = 3;
+      let line1 = entry.line1;
+      while (line1.length > 0 && ctx.measureText(line1).width > CW - 16) line1 = line1.slice(0, -1);
+      ctx.fillText(line1, CP_X + 10, y + 3);
+      if (entry.line2) {
+        ctx.fillStyle = entry.col; ctx.font = 'bold 9px Courier New';
+        let line2 = entry.line2;
+        while (line2.length > 0 && ctx.measureText(line2).width > CW - 16) line2 = line2.slice(0, -1);
+        ctx.fillText(line2, CP_X + 10, y + 16);
+      }
+      if (entry.isKO) { ctx.fillStyle = '#FF4444'; ctx.font = 'bold 10px Courier New'; ctx.textAlign = 'right'; ctx.fillText('KO!', CP_X + CW - 4, y + 3); }
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(CP_X + 6, y + entryH - 1); ctx.lineTo(CP_X + CW - 6, y + entryH - 1); ctx.stroke();
+    });
+    if (phase !== 'battle' && commentary.length === 0) {
+      ctx.fillStyle = '#555'; ctx.font = '10px Courier New';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('バトル開始待ち...', CP_X + CW / 2, H / 2);
+    }
+  }
+}
+
+// =====================================================
+// バナー
+// =====================================================
+function drawBanner() {
+  if (!bannerTxt) return;
+  const bx = ACX, by = H - 65;
+  ctx.save(); ctx.translate(bx, by);
+  ctx.font = 'bold 28px Courier New';
+  const tw = ctx.measureText(bannerTxt).width;
+  const bw = Math.max(220, tw + 60), bh = 52;
+  ctx.save(); ctx.transform(1, 0, -.12, 1, 0, 0);
+  ctx.shadowColor = 'rgba(0,0,0,.65)'; ctx.shadowBlur = 10;
+  ctx.fillStyle = '#CC1111'; ctx.fillRect(-bw / 2, -bh / 2, bw, bh);
+  ctx.fillStyle = 'rgba(255,255,255,.1)'; ctx.fillRect(-bw / 2, -bh / 2, bw, bh / 3);
+  ctx.restore();
+  ctx.fillStyle = '#FFF'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = 5;
+  ctx.fillText(bannerTxt, 0, 0);
+  ctx.restore();
+}
+
+// =====================================================
+// スタート画面
+// =====================================================
+function drawStartScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,.92)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  const cx = W / 2;
+  if (isPortrait) {
+    ctx.font = 'bold 36px Courier New';
+    ctx.fillStyle = '#FFD700'; ctx.shadowColor = '#CC0000'; ctx.shadowBlur = 20;
+    ctx.fillText('ポケモン', cx, 115);
+    ctx.fillText('バトルロワイヤル', cx, 160);
+    ctx.shadowBlur = 0;
+    ALL_POKEMON.slice(0, 6).forEach((p, i) => {
+      const a = (i/6)*Math.PI*2 - Math.PI/2 + performance.now()*0.0006;
+      const img = IMGS[p.file];
+      if (img && img.complete && img.naturalWidth > 0) {
+        ctx.save(); ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, cx + Math.cos(a)*55 - 20, 235 + Math.sin(a)*38 - 20, 40, 40); ctx.restore();
+      }
+    });
+    ctx.font = '13px Courier New'; ctx.fillStyle = '#EEE';
+    ctx.fillText('倒した数・ダメージが多いポケモンが優勝！', cx, 315);
+    ctx.font = '12px Courier New'; ctx.fillStyle = '#FFDD88';
+    ctx.fillText('好きなポケモンを選んで動かせる！', cx, 340);
+    ctx.fillStyle = '#AADDFF'; ctx.fillText('バトル終了後にランキング発表！', cx, 362);
+    ctx.fillStyle = '#888'; ctx.font = '11px Courier New';
+    ctx.fillText('（Dパッドで操作）', cx, 382);
+    const bx = cx - 100, by = 415, bw = 200, bh = 56;
+    ctx.fillStyle = '#CC1111'; ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh/3);
+    ctx.font = 'bold 24px Courier New'; ctx.fillStyle = '#FFF';
+    ctx.textBaseline = 'middle'; ctx.shadowColor = 'transparent';
+    ctx.fillText('▶  スタート', cx, by + bh/2);
+    c._startBtn = { x: bx, y: by, w: bw, h: bh };
+  } else {
+    ctx.font = 'bold 44px Courier New';
+    ctx.fillStyle = '#FFD700'; ctx.shadowColor = '#CC0000'; ctx.shadowBlur = 24;
+    ctx.fillText('ポケモン', ACX, H/2 - 105);
+    ctx.fillText('バトルロワイヤル', ACX, H/2 - 55);
+    ctx.shadowBlur = 0;
+    ctx.font = '13px Courier New'; ctx.fillStyle = '#EEE';
+    ctx.fillText('倒した数・ダメージが多いポケモンが優勝！', ACX, H/2 + 2);
+    ctx.font = '11px Courier New'; ctx.fillStyle = '#FFDD88';
+    ctx.fillText('好きなポケモンを選んで自分で動かせる！', ACX, H/2 + 22);
+    ctx.fillStyle = '#AADDFF'; ctx.fillText('バトル終了後にランキング発表！', ACX, H/2 + 40);
+    ctx.fillStyle = '#AAA'; ctx.fillText('（矢印キー・WASD・画面のボタンで操作）', ACX, H/2 + 57);
+    ALL_POKEMON.slice(0, 6).forEach((p, i) => {
+      const a = (i/6)*Math.PI*2 - Math.PI/2 + performance.now()*0.0006;
+      const r = 62, px = ACX + Math.cos(a)*r, py = H/2 - 30 + Math.sin(a)*r*.6;
+      const img = IMGS[p.file];
+      if (img && img.complete && img.naturalWidth > 0) {
+        ctx.save(); ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, px - 18, py - 18, 36, 36); ctx.restore();
+      }
+    });
+    const bx = ACX - 90, by = H/2 + 74, bw = 180, bh = 48;
+    ctx.fillStyle = '#CC1111'; ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh/3);
+    ctx.font = 'bold 22px Courier New'; ctx.fillStyle = '#FFF';
+    ctx.textBaseline = 'middle'; ctx.shadowColor = 'transparent';
+    ctx.fillText('▶  スタート', ACX, by + bh/2);
+    c._startBtn = { x: bx, y: by, w: bw, h: bh };
+  }
+}
+
+// =====================================================
+// ベット中ヒント
+// =====================================================
+function drawBettingHint() {
+  ctx.save();
+  ctx.font = 'bold 11px Courier New'; ctx.fillStyle = '#FFD700';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.shadowColor = '#000'; ctx.shadowBlur = 4;
+  ctx.fillText('← 操作したいポケモンをクリックしよう！ →', ACX, 8);
+  if (betIdx >= 0) {
+    const pf = fighters[betIdx];
+    ctx.fillStyle = '#88FF88';
+    ctx.font = '10px Courier New';
+    ctx.fillText(`選択中: ${pf ? pf.name : ''}  ★矢印キー・Dパッドで動かせるよ！`, ACX, 24);
+  }
+  ctx.restore();
+}
+
+// =====================================================
+// リザルト画面
+// =====================================================
+function drawResultScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,.93)'; ctx.fillRect(0, 0, W, H);
+  const cx = W / 2;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.font = (isPortrait ? 'bold 20px' : 'bold 26px') + ' Courier New';
+  ctx.fillStyle = '#FFD700'; ctx.shadowColor = '#884400'; ctx.shadowBlur = 12;
+  ctx.fillText('🏆  ランキング発表！  🏆', cx, isPortrait ? 32 : 38);
+  ctx.shadowBlur = 0;
+
+  const ranked = [...fighters].sort((a, b) => (b.kills*200+b.damageDealt) - (a.kills*200+a.damageDealt));
+  const playerFighter = playerIdx >= 0 ? fighters[playerIdx] : null;
+  const playerRank = playerFighter ? ranked.indexOf(playerFighter) + 1 : -1;
+  const medals = ['🥇', '🥈', '🥉', '４', '５', '６'];
+  const medalCols = ['#FFD700', '#CCCCCC', '#CD7F32', '#888', '#777', '#666'];
+
+  const rowH = isPortrait ? 86 : 74;
+  const startY = isPortrait ? 38 : 50;
+  const rowW = isPortrait ? W - 10 : 500;
+  const rowX = isPortrait ? 5 : cx - 250;
+
+  ranked.forEach((f, rank) => {
+    const y = startY + rank * rowH;
+    const isPlayer = f === playerFighter;
+    const isFirst = rank === 0;
+    const score = Math.round(f.kills * 200 + f.damageDealt);
+    ctx.fillStyle = isPlayer ? 'rgba(255,215,0,0.13)' : isFirst ? 'rgba(255,200,80,0.07)' :
+                   rank%2===0 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.18)';
+    ctx.fillRect(rowX, y+2, rowW, rowH-4);
+    if (isPlayer) { ctx.strokeStyle='#FFD70055'; ctx.lineWidth=1.5; ctx.strokeRect(rowX, y+2, rowW, rowH-4); }
+
+    // メダル
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=(isFirst ? 'bold 22px' : 'bold 16px')+' Courier New';
+    ctx.fillStyle=medalCols[rank];
+    ctx.shadowColor=isFirst?'#AA8800':'transparent'; ctx.shadowBlur=isFirst?6:0;
+    ctx.fillText(medals[rank], rowX+22, y+rowH/2); ctx.shadowBlur=0;
+
+    // スプライト
+    const img = IMGS[f.file];
+    if (img && img.complete && img.naturalWidth > 0) {
+      ctx.save(); ctx.imageSmoothingEnabled=false;
+      const sz = isFirst ? (isPortrait?72:62) : (isPortrait?62:52);
+      ctx.drawImage(img, rowX+42, y+rowH/2-sz/2, sz, sz); ctx.restore();
+    }
+
+    // 名前
+    const nameX = rowX + (isPortrait ? 112 : 118);
+    ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+    ctx.font=(isFirst?'bold 15px':isPlayer?'bold 13px':'13px')+' Courier New';
+    ctx.fillStyle=isPlayer?'#FFD700':isFirst?'#FFF':'#CCC';
+    ctx.fillText((isPlayer?'★ ':'')+f.name, nameX, y+26);
+
+    // タイプバッジ
+    f.types.forEach((tp, ti) => {
+      const bx2=nameX+ti*56, by2=y+30;
+      ctx.fillStyle=TC[tp]||'#888'; ctx.fillRect(bx2, by2, 50, 11);
+      ctx.font='7px Courier New'; ctx.fillStyle='#FFF'; ctx.textBaseline='middle';
+      ctx.fillText(tp.toUpperCase(), bx2+25, by2+5.5); ctx.textBaseline='alphabetic';
+    });
+
+    // 撃破・ダメージ
+    ctx.font='10px Courier New'; ctx.fillStyle='#AAA';
+    ctx.fillText('撃破 '+f.kills+'体 / ダメ '+Math.round(f.damageDealt), nameX, y+(isPortrait?58:60));
+
+    // スコア
+    ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.font=(isFirst?'bold 16px':'bold 13px')+' Courier New';
+    ctx.fillStyle=isFirst?'#FFD700':'#AAA';
+    ctx.fillText(score+'pt', rowX+rowW-8, y+rowH/2); ctx.textBaseline='alphabetic';
+
+    ctx.strokeStyle='rgba(255,255,255,0.07)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(rowX+8,y+rowH-2); ctx.lineTo(rowX+rowW-8,y+rowH-2); ctx.stroke();
+  });
+
+  const msgY = startY + ranked.length * rowH + 16;
+  if (playerRank > 0) {
+    const pMsg = playerRank===1 ? '🎉 '+(isPortrait?'優勝！おめでとう！':'あなたのポケモンが優勝！おめでとう！')+' 🎉' :
+                 playerRank===2 ? '🥈 惜しい！２位！' : playerRank===3 ? '🥉 ３位！よく戦った！' :
+                 '😢 '+playerRank+'位… また挑戦しよう！';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font='bold 14px Courier New';
+    ctx.fillStyle=playerRank===1?'#FFD700':playerRank<=3?'#88FF88':'#FF8888';
+    ctx.shadowColor='#000'; ctx.shadowBlur=6;
+    ctx.fillText(pMsg, cx, msgY); ctx.shadowBlur=0;
+  }
+
+  const bx=cx-90, by=(playerRank>0?msgY:startY+ranked.length*rowH)+20, bw=180, bh=44;
+  ctx.fillStyle='#CC1111'; ctx.fillRect(bx, by, bw, bh);
+  ctx.fillStyle='rgba(255,255,255,.12)'; ctx.fillRect(bx, by, bw, bh/3);
+  ctx.font='bold 16px Courier New'; ctx.fillStyle='#FFF';
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.shadowBlur=0;
+  ctx.fillText('▶  もう一度', cx, by+bh/2);
+  c._replayBtn = { x: bx, y: by, w: bw, h: bh };
+}
+
+// =====================================================
+// 読み込み画面
+// =====================================================
+function drawLoading() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+  ctx.font = 'bold 22px Courier New'; ctx.fillStyle = '#FFD700';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const dots = '。'.repeat(Math.floor(performance.now() / 400) % 4);
+  ctx.fillText('読み込み中' + dots, W / 2, H / 2);
+}
+
+// =====================================================
+// メインループ
+// =====================================================
+function loop(ts) {
+  ctx.clearRect(0, 0, W, H);
+  if (phase === 'loading') {
+    drawLoading();
+  } else {
+    if (phase !== 'start') update(ts);
+    // 縦持ち：アリーナ部分のみ砂色、残りは暗色
+    if (isPortrait) {
+      ctx.fillStyle = '#C8B88A'; ctx.fillRect(0, 0, W, COMM_Y);
+      ctx.fillStyle = '#0a0a18'; ctx.fillRect(0, COMM_Y, W, COMM_H);
+      ctx.fillStyle = '#1a1a2a'; ctx.fillRect(0, COMM_Y + COMM_H, W, H - COMM_Y - COMM_H);
+    } else {
+      ctx.fillStyle = '#C8B88A'; ctx.fillRect(0, 0, W, H);
+    }
+    drawArena();
+    drawParticles();
+    drawEffects();
+    drawFighters();
+    drawFloatingTexts();
+    drawPanels();
+    drawCommentary();
+    drawDpad();
+    drawBanner();
+    if (phase === 'betting') drawBettingHint();
+    if (phase === 'battle' && playerIdx >= 0 && !isPortrait) {
+      const pf = fighters[playerIdx];
+      ctx.save();
+      ctx.font = 'bold 10px Courier New'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillStyle = pf && pf.alive ? '#FFD700' : '#FF6666';
+      ctx.shadowColor = '#000'; ctx.shadowBlur = 4;
+      ctx.fillText(
+        pf && pf.alive ? `🎮 あなた: ${pf.name}  ―  矢印キー・WASD・Dパッドで操作`
+                       : `💔 ${pf ? pf.name : ''}  が倒れた…観戦中`,
+        ACX, 8
+      );
+      ctx.restore();
+    }
+    if (phase === 'start')   drawStartScreen();
+    if (phase === 'result')  drawResultScreen();
+  }
+  requestAnimationFrame(loop);
+}
+
+// =====================================================
+// 入力
+// =====================================================
+function getXY(e) {
+  const rect = c.getBoundingClientRect();
+  const sx = W / rect.width, sy = H / rect.height;
+  const cx = e.touches ? e.touches[0].clientX : e.clientX;
+  const cy = e.touches ? e.touches[0].clientY : e.clientY;
+  return { x: (cx - rect.left) * sx, y: (cy - rect.top) * sy };
+}
+
+function onClick(e) {
+  initAudio();
+  const {x: mx, y: my} = getXY(e);
+  if (phase === 'start') {
+    const b = c._startBtn;
+    if (b && mx > b.x && mx < b.x + b.w && my > b.y && my < b.y + b.h) startGame();
+  } else if (phase === 'betting') {
+    let hit = false;
+    fighters.forEach(f => {
+      if (!f.alive) return;
+      if (Math.hypot(mx - f.x, my - f.y) < f.radius + 14) { betIdx = f.id; hit = true; }
+    });
+    if (!hit) {
+      if (isPortrait) {
+        const entryH = Math.floor((COMM_Y - 8) / 3);
+        fighters.filter(f => f.side === 0).forEach((f, i) => {
+          const ey = 4 + i * entryH;
+          if (mx >= 0 && mx < PW && my >= ey && my < ey + entryH - 3) betIdx = f.id;
+        });
+        fighters.filter(f => f.side === 1).forEach((f, i) => {
+          const ey = 4 + i * entryH;
+          if (mx >= RP_X && mx < RP_X + PW && my >= ey && my < ey + entryH - 3) betIdx = f.id;
+        });
+      } else {
+        const entryH = Math.floor((H - 20) / 3);
+        fighters.filter(f => f.side === 0).forEach((f, i) => {
+          const ey = 10 + i * entryH;
+          if (mx > 5 && mx < 5 + PW - 12 && my > ey && my < ey + entryH - 5) betIdx = f.id;
+        });
+        fighters.filter(f => f.side === 1).forEach((f, i) => {
+          const ey = 10 + i * entryH;
+          if (mx > RP_X + 3 && mx < RP_X + 3 + PW - 10 && my > ey && my < ey + entryH - 5) betIdx = f.id;
+        });
+      }
+    }
+  } else if (phase === 'result') {
+    const b = c._replayBtn;
+    if (b && mx > b.x && mx < b.x + b.w && my > b.y && my < b.y + b.h) resetGame();
+  }
+}
+
+c.addEventListener('click', onClick);
+
+// タッチ：Dパッド + ゲームクリック
+c.addEventListener('touchstart', e => {
+  e.preventDefault();
+  initAudio();
+  updateDpadFromTouches(e);
+  // DパッドボタンでなければゲームクリックとしてもOK
+  const {x: mx, y: my} = getXY(e);
+  if (!isDpadPos(mx, my)) onClick(e);
+}, { passive: false });
+
+c.addEventListener('touchmove', e => {
+  e.preventDefault();
+  updateDpadFromTouches(e);
+}, { passive: false });
+
+c.addEventListener('touchend', e => {
+  e.preventDefault();
+  updateDpadFromTouches(e); // 離したら対応するフラグが消える
+}, { passive: false });
+
+// =====================================================
+// ゲームフロー
+// =====================================================
+function startGame() {
+  initFighters();
+  phase = 'betting'; countdown = 10; bannerTxt = 'ベット受付中...'; lastTs = 0;
+  playStart();
+  clearInterval(cdInt);
+  cdInt = setInterval(() => {
+    countdown--;
+    if (countdown <= 0) {
+      clearInterval(cdInt);
+      playerIdx = betIdx; // 選んだポケモンを操作
+      bannerTxt = 'スタート！';
+      setTimeout(() => { bannerTxt = ''; phase = 'battle'; }, 900);
+    } else if (countdown <= 3) {
+      bannerTxt = countdown.toString();
+    } else {
+      bannerTxt = 'ベット受付中...';
+    }
+  }, 1000);
+}
+
+function resetGame() {
+  clearInterval(cdInt);
+  bannerTxt = ''; betIdx = -1; playerIdx = -1; phase = 'start';
+  fighters = []; activeEffects = []; particles = []; floatingTexts = []; commentary = [];
+  DPAD_ACTIVE.up = false; DPAD_ACTIVE.down = false;
+  DPAD_ACTIVE.left = false; DPAD_ACTIVE.right = false;
+}
+
+// =====================================================
+// 起動
+// =====================================================
+preloadImages(() => {
+  phase = 'start';
+  initFighters();
+});
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
